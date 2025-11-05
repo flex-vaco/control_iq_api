@@ -19,7 +19,7 @@ app.use(express.urlencoded({ limit: '50mb', extended: true })); // Support URL-e
 // Handle all UI requests by serving the React app's index.html
 app.use(express.static('/apps/control_iq/control_iq_ui/build'));
 app.get('/ui', (req, res) => {
-  res.sendFile(path.join(__dirname, '/apps/control_iq/control_iq_ui/build', 'index.html')); // Adjust path as needed
+  res.sendFile(path.join('/apps/control_iq/control_iq_ui/build', 'index.html')); // Adjust path as needed
 });
 
 //Health check
