@@ -1,0 +1,263 @@
+const RCM = require('../models/rcm.model');
+const PBC = require('../models/pbc.model');
+const db = require('../config/db');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// --- Multer Configuration for MULTIPLE Document Upload ---
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    // Save files to server/uploads/evidences
+    const uploadPath = path.join(__dirname, '..', 'uploads', 'evidences');
+    // Ensure the directory exists
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    // Unique filename: timestamp-originalfilename.ext
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+
+// Configure for multiple files, named 'documents'
+const upload = multer({ storage: storage }).array('documents');
+// ---------------------------------------------------
+
+
+// GET all RCM Control IDs and Descriptions for the Add PBC dropdown
+exports.getAvailableRcmControls = async (req, res) => {
+  try {
+    const clientId = req.query.client_id;
+    const tenantId = req.user.tenantId;
+    if (!clientId) {
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+    // We reuse a function to get all RCM data, then select only what we need
+    const rcmData = await RCM.findAllByClient(clientId, tenantId);
+    
+    // Map to an array of objects with control_id and control_description
+    const controls = rcmData.map(rcm => ({
+      control_id: rcm.control_id,
+      control_description: rcm.control_description
+    }));
+
+    res.json(controls);
+  } catch (error) {
+    console.error('Error fetching RCM controls:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET all existing Evidence (PBC) requests for the client
+exports.getAllEvidence = async (req, res) => {
+  try {
+    const clientId = req.query.client_id || null;
+    const tenantId = req.user.tenantId;
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+    // Use findAll to get data with client_name (supports both filtered and unfiltered)
+    const data = await PBC.findAll(tenantId, clientId);
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching Evidence data:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+
+// POST to create a new Evidence request with multiple document uploads
+exports.createEvidence = (req, res) => {
+  upload(req, res, async (err) => {
+    if (err) {
+      console.error('Multer file upload error:', err);
+      // Handle file size or other multer errors
+      if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ message: 'File upload error: ' + err.message });
+      }
+      return res.status(500).json({ message: 'File upload failed.' });
+    }
+    
+    // req.body contains form fields, req.files contains file array
+    const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
+    const clientId = client_id;
+    const tenantId = req.user.tenantId;
+    if (!clientId) {
+      // If validation fails, clean up any uploaded files
+      if (req.files) {
+        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+        }));
+      }
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+    if (!tenantId) {
+      // If validation fails, clean up any uploaded files
+      if (req.files) {
+        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+        }));
+      }
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+    const userId = req.user.userId;
+
+    if (!control_id || !evidence_name || !testing_status) {
+      // If validation fails, clean up any uploaded files
+      if (req.files) {
+        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+        }));
+      }
+      return res.status(400).json({ message: 'Missing required fields: Control ID, Evidence Name, or Status.' });
+    }
+
+    try {
+      // 1. Get the RCM Primary Key (rcm_id) from the selected control_id
+      const rcmId = await RCM.findRcmIdByControlId(control_id, clientId, tenantId);
+      if (!rcmId) {
+         // Clean up files if RCM lookup fails
+        if (req.files) {
+          req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          }));
+        }
+        return res.status(404).json({ message: `RCM Control ID '${control_id}' not found for this client.` });
+      }
+
+      // 2. Prepare Data for Model Transaction
+      const evidenceData = {
+        rcm_id: rcmId,
+        tenant_id: tenantId,
+        client_id: clientId,
+        evidence_name,
+        testing_status,
+        year: year || null,
+        quarter: quarter || null,
+        created_by: userId,
+      };
+
+      const documentsData = req.files ? req.files.map(file => ({
+        artifact_url: `evidences/${file.filename}`, // Relative path for storage
+      })) : [];
+
+      // 3. Execute Transaction
+      const result = await PBC.createEvidenceAndDocuments(evidenceData, documentsData);
+      
+      res.status(201).json({ 
+        message: 'Evidence request created successfully.', 
+        evidenceId: result.evidenceId 
+      });
+
+    } catch (error) {
+      // If DB fails, clean up the uploaded files
+      if (req.files) {
+        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file after DB error:", unlinkErr);
+        }));
+      }
+      console.error('Error creating Evidence Request:', error);
+      res.status(500).json({ message: 'Server error during evidence creation.' });
+    }
+  });
+};
+
+// PUT update evidence
+exports.updateEvidence = (req, res) => {
+  upload(req, res, async (err) => {
+    if (err) {
+      return res.status(500).json({ message: 'File upload error: ' + err.message });
+    }
+    
+    try {
+      const evidenceId = req.params.id;
+      const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
+      const tenantId = req.user.tenantId;
+      const userId = req.user.userId;
+
+      if (!tenantId) {
+        return res.status(400).json({ message: 'Tenant ID is required.' });
+      }
+
+      // Get the RCM Primary Key (rcm_id) from the selected control_id
+      const rcmId = await RCM.findRcmIdByControlId(control_id, client_id, tenantId);
+      if (!rcmId) {
+        return res.status(404).json({ message: `RCM Control ID '${control_id}' not found for this client.` });
+      }
+
+      const evidenceData = {
+        rcm_id: rcmId,
+        evidence_name,
+        testing_status,
+        year: year || null,
+        quarter: quarter || null
+      };
+
+      const updated = await PBC.updateEvidence(evidenceId, evidenceData, tenantId, userId);
+      
+      if (!updated) {
+        return res.status(404).json({ message: 'Evidence not found or already deleted.' });
+      }
+
+      // Handle file uploads if any (similar to create)
+      if (req.files && req.files.length > 0) {
+        const documentsData = req.files.map(file => ({
+          artifact_url: `evidences/${file.filename}`,
+        }));
+        // Add documents to existing evidence
+        const connection = await db.getConnection();
+        try {
+          const docValues = documentsData.map(doc => [
+            evidenceId,
+            tenantId,
+            client_id,
+            doc.artifact_url,
+            userId
+          ]).flat();
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?)').join(', ');
+          await connection.query(
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, artifact_url, created_by) VALUES ${placeholders}`,
+            docValues
+          );
+        } finally {
+          connection.release();
+        }
+      }
+
+      res.json({ message: 'Evidence updated successfully.' });
+    } catch (error) {
+      console.error('Error updating Evidence:', error);
+      res.status(500).json({ message: 'Server error during evidence update.' });
+    }
+  });
+};
+
+// DELETE evidence
+exports.deleteEvidence = async (req, res) => {
+  try {
+    const evidenceId = req.params.id;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const deleted = await PBC.deleteEvidence(evidenceId, tenantId, userId);
+    
+    if (!deleted) {
+      return res.status(404).json({ message: 'Evidence not found or already deleted.' });
+    }
+
+    res.json({ message: 'Evidence deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting Evidence:', error);
+    res.status(500).json({ message: 'Server error during evidence deletion.' });
+  }
+};
+

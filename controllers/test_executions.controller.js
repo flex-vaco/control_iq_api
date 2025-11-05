@@ -1,0 +1,621 @@
+const fs = require('fs').promises;
+const path = require('path');
+const TestExecution = require('../models/test_executions.model');
+const RCM = require('../models/rcm.model');
+const PBC = require('../models/pbc.model');
+const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+
+// POST create a new test execution
+exports.createTestExecution = async (req, res) => {
+  try {
+    const { control_id, year, quarter, client_id } = req.body;
+    const clientId = client_id;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    // Validate required fields
+    if (!control_id || !year || !quarter) {
+      return res.status(400).json({ 
+        message: 'Missing required fields: control_id, year, or quarter.' 
+      });
+    }
+
+    // 1. Get rcm_id from control_id
+    const rcmId = await RCM.findRcmIdByControlId(control_id, clientId, tenantId);
+    if (!rcmId) {
+      return res.status(404).json({ 
+        message: `RCM Control ID '${control_id}' not found for this client.` 
+      });
+    }
+
+    // 2. Find evidence_id (pcb_id) from evidences table using rcm_id, year, and quarter
+    const evidenceData = await TestExecution.findEvidenceIdByRcmYearQuarter(
+      rcmId, 
+      year, 
+      quarter, 
+      clientId, 
+      tenantId
+    );
+
+    const evidenceId = evidenceData ? evidenceData.evidence_id : null;
+    const testingStatus = evidenceData ? evidenceData.testing_status : null;
+
+    // 3. Create test execution
+    const testExecutionData = {
+      rcm_id: rcmId,
+      client_id: clientId,
+      tenant_id: tenantId,
+      pcb_id: evidenceId, // This is the evidence_id from evidences table
+      user_id: userId,
+      year: year,
+      quarter: quarter,
+      status: 'pending',
+      result: 'na',
+      created_by: userId
+    };
+
+    const testExecutionId = await TestExecution.create(testExecutionData);
+
+    // 4. Get related data for the response
+    const evidenceDocuments = evidenceId 
+      ? await TestExecution.getEvidenceDocuments(evidenceId, tenantId)
+      : [];
+    
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(rcmId, tenantId);
+
+    res.status(201).json({
+      message: 'Test execution created successfully.',
+      test_execution_id: testExecutionId,
+      evidence_documents: evidenceDocuments,
+      test_attributes: testAttributes,
+      testing_status: testingStatus,
+      control_id: control_id
+    });
+
+  } catch (error) {
+    console.error('Error creating test execution:', error);
+    res.status(500).json({ message: 'Server error during test execution creation.' });
+  }
+};
+
+// GET evidence documents and test attributes for a control_id
+exports.getTestExecutionData = async (req, res) => {
+  try {
+    const { control_id, client_id } = req.query;
+    const clientId = client_id;
+    const tenantId = req.user.tenantId;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!control_id) {
+      return res.status(400).json({ 
+        message: 'Missing required parameter: control_id.' 
+      });
+    }
+
+    // Get rcm_id from control_id
+    const rcmId = await RCM.findRcmIdByControlId(control_id, clientId, tenantId);
+    if (!rcmId) {
+      return res.status(404).json({ 
+        message: `RCM Control ID '${control_id}' not found for this client.` 
+      });
+    }
+
+    // Get test attributes by rcm_id
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(rcmId, tenantId);
+
+    res.json({
+      test_attributes: testAttributes,
+      control_id: control_id
+    });
+
+  } catch (error) {
+    console.error('Error fetching test execution data:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET evidence data without creating test execution (for preview)
+exports.getEvidenceDataForTesting = async (req, res) => {
+  try {
+    const { control_id, year, quarter, client_id } = req.query;
+    const clientId = client_id;
+    const tenantId = req.user.tenantId;
+
+    if (!clientId) {
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!control_id || !year || !quarter) {
+      return res.status(400).json({ 
+        message: 'Missing required parameters: control_id, year, or quarter.' 
+      });
+    }
+
+    // Get rcm_id from control_id
+    const rcmId = await RCM.findRcmIdByControlId(control_id, clientId, tenantId);
+    if (!rcmId) {
+      return res.status(404).json({ 
+        message: `RCM Control ID '${control_id}' not found for this client.` 
+      });
+    }
+
+    // Find evidence_id (pcb_id) from evidences table using rcm_id, year, and quarter
+    const evidenceData = await TestExecution.findEvidenceIdByRcmYearQuarter(
+      rcmId, 
+      parseInt(year), 
+      quarter, 
+      clientId, 
+      tenantId
+    );
+
+    const evidenceId = evidenceData ? evidenceData.evidence_id : null;
+    const testingStatus = evidenceData ? evidenceData.testing_status : null;
+
+    // Get evidence documents
+    const evidenceDocuments = evidenceId 
+      ? await TestExecution.getEvidenceDocuments(evidenceId, tenantId)
+      : [];
+    
+    // Get test attributes by rcm_id
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(rcmId, tenantId);
+
+    res.json({
+      evidence_documents: evidenceDocuments,
+      test_attributes: testAttributes,
+      testing_status: testingStatus,
+      control_id: control_id
+    });
+
+  } catch (error) {
+    console.error('Error fetching evidence data for testing:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET all test executions for the client
+exports.getAllTestExecutions = async (req, res) => {
+  try {
+    const clientId = req.query.client_id || null;
+    const tenantId = req.user.tenantId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const data = await TestExecution.findAllByClient(clientId, tenantId);
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching test executions:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// PUT update test execution remarks
+exports.updateTestExecutionRemarks = async (req, res) => {
+  try {
+    const { test_execution_id, remarks } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    if (remarks === undefined || remarks === null) {
+      return res.status(400).json({ message: 'Remarks is required.' });
+    }
+
+    const updated = await TestExecution.updateRemarks(test_execution_id, remarks, tenantId, userId);
+    
+    if (!updated) {
+      return res.status(404).json({ message: 'Test execution not found or already deleted.' });
+    }
+
+    res.json({ message: 'Test execution remarks updated successfully.' });
+  } catch (error) {
+    console.error('Error updating test execution remarks:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET test execution details by ID
+exports.getTestExecutionById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user.tenantId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    // Get test execution with RCM data
+    const testExecution = await TestExecution.findById(parseInt(id), tenantId);
+    
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    // Get RCM details including classification
+    const rcmDetails = await RCM.findById(testExecution.rcm_id, tenantId);
+    
+    // Get evidence documents
+    const evidenceDocuments = testExecution.pcb_id 
+      ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
+      : [];
+    
+    // Get test attributes by rcm_id
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(testExecution.rcm_id, tenantId);
+
+    res.json({
+      test_execution: testExecution,
+      rcm_details: rcmDetails,
+      evidence_documents: evidenceDocuments,
+      test_attributes: testAttributes
+    });
+
+  } catch (error) {
+    console.error('Error fetching test execution details:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// POST get evidence AI details by document ID
+exports.getEvidenceAIDetails = async (req, res) => {
+  try {
+    const { evidence_document_id, evidence_url } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!evidence_document_id) {
+      return res.status(400).json({ message: 'Evidence document ID is required.' });
+    }
+
+    if (!evidence_url) {
+      return res.status(400).json({ message: 'Evidence URL is required.' });
+    }
+
+    console.log('Original URL:', evidence_url);
+    const imageBase64 = await convertImageUrlToBase64(evidence_url);
+    console.log('Image converted to base64 successfully');
+
+    const extractedText = await extractTextFromImage(process.env.GEMINI_AI_KEY, imageBase64);
+
+    const updateData = {
+      extractedText: extractedText
+    };
+    await PBC.updateEvidenceAIDetails(evidence_document_id, updateData, tenantId, userId);
+
+    res.json({
+      message: 'Evidence AI details fetched successfully.',
+      evidence_document_id: evidence_document_id,
+      extracted_text: extractedText
+    });
+
+  } catch (error) {
+    console.error('Error fetching evidence AI details:', error);
+    res.status(500).json({ 
+      message: 'Server error.',
+      error: error.message 
+    });
+  }
+};
+
+// POST compare attributes
+exports.compareAttributes = async (req, res) => {
+  try {
+    const { evidence_document_id, rcm_id, test_execution_id, client_id } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!evidence_document_id) {
+      return res.status(400).json({ message: 'Evidence document ID is required.' });
+    }
+
+    if (!rcm_id) {
+      return res.status(400).json({ message: 'RCM ID is required.' });
+    }
+
+    const evidenceDocument = await PBC.findEvidenceDocumentById(evidence_document_id, tenantId);
+
+    if (!evidenceDocument) {
+      return res.status(404).json({ message: 'Evidence document not found.' });
+    }
+
+    const evidenceAiDetails = evidenceDocument.evidence_ai_details;
+
+    // Validate that evidence_ai_details exists in the database (we fetch from DB, not request body)
+    if (!evidenceAiDetails || 
+        (typeof evidenceAiDetails === 'string' && evidenceAiDetails.trim() === '') ||
+        (typeof evidenceAiDetails === 'object' && Object.keys(evidenceAiDetails).length === 0)) {
+      return res.status(400).json({ 
+        message: 'Evidence AI details are required. Please fetch evidence AI details first.' 
+      });
+    }
+
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(rcm_id, tenantId);
+
+    if (!testAttributes) {
+      return res.status(404).json({ message: 'Test attributes not found.' });
+    }
+    console.log(testAttributes);
+
+    const attributesList = testAttributes.map((attr) => 
+      `{"attribute_name": "${attr.attribute_name}", "attribute_description": "${attr.attribute_description}", "test_steps": "${attr.test_steps}"}`
+    ).join(',\n');
+  
+    const prompt = `Analyze the evidence and verify compliance with each requirement based on context.
+  
+    EVIDENCE:
+    ${evidenceAiDetails}
+    
+    REQUIREMENTS:
+    [${attributesList}]
+    
+    TASK:
+    - Understand the context and meaning of both evidence and requirements
+    - Match based on semantic meaning, not exact text
+    - Consider synonyms, equivalent terms, and policy variations
+    
+    Return JSON array with each requirement evaluated:
+    [
+      attributes_results: [
+          "attribute_name": "string",
+          "attribute_description": "string", 
+          "test_steps": "string",
+          "result": boolean,
+          "reason": "string explaining match/mismatch based on context"
+        }
+      ],
+      summary: "string",
+      total_attributes: number,
+      total_attributes_passed: number,
+      total_attributes_failed: number,
+      final_result: boolean
+    }
+    
+    Rules:
+    - result=true if evidence contextually satisfies the requirement
+    - result=false if evidence contradicts or is missing
+    - Compare meaning, not exact wording
+    - For numeric values, check if condition is met (>=, <=, ==)
+    - Be strict but contextually aware
+    - final_result is true if all attributes are passed, false otherwise`;
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+        ]
+      }]
+    };
+
+    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${process.env.GEMINI_AI_KEY}`;
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Gemini API Error:', errorData);
+      throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult); 
+    
+    // Check if record already exists
+    const existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+      test_execution_id,
+      evidence_document_id,
+      tenantId
+    );
+
+    if (existingRecord) {
+      // Record exists, return existing data instead of creating duplicate
+      let parsedExistingResult = null;
+      try {
+        parsedExistingResult = existingRecord.result;
+      } catch (parseError) {
+        console.error('Error parsing existing result JSON:', parseError);
+        parsedExistingResult = parsedResult; // Fallback to new parsed result
+      }
+
+      return res.json({
+        message: 'Evidence Results Retrieved Successfully.',
+        evidence_document_id: evidence_document_id,
+        results: parsedExistingResult,
+        test_execution_evidence_document_id: existingRecord.test_execution_evidence_document_id
+      });
+    }
+
+    // Record doesn't exist, create new one
+    const testExecutionEvidenceDocumentData = {
+      test_execution_id: test_execution_id,
+      evidence_document_id: evidence_document_id,
+      rcm_id: rcm_id,
+      tenant_id: tenantId,
+      client_id: client_id,
+      result: result,
+      status: parsedResult.final_result,
+      total_attributes: parsedResult.total_attributes,
+      total_attributes_passed: parsedResult.total_attributes_passed,
+      total_attributes_failed: parsedResult.total_attributes_failed,
+      created_by: userId
+    };
+    const testExecutionEvidenceDocumentId = await TestExecutionEvidenceDocuments.create(testExecutionEvidenceDocumentData);
+    res.json({
+      message: 'Evidence Resutls Fetched Successfully.',
+      evidence_document_id: evidence_document_id,
+      results: parsedResult,
+      test_execution_evidence_document_id: testExecutionEvidenceDocumentId
+    });
+  } catch (error) {
+    console.error('Error comparing attributes:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET check if test execution evidence document exists
+exports.checkTestExecutionEvidenceDocument = async (req, res) => {
+  try {
+    const { test_execution_id, evidence_document_id } = req.query;
+    const tenantId = req.user.tenantId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    if (!evidence_document_id) {
+      return res.status(400).json({ message: 'Evidence document ID is required.' });
+    }
+
+    const existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+      test_execution_id,
+      evidence_document_id,
+      tenantId
+    );
+
+    if (existingRecord) {
+      // Parse the result JSON string
+      let parsedResult = null;
+      try {
+        parsedResult = existingRecord.result;
+      } catch (parseError) {
+        console.error('Error parsing result JSON:', parseError);
+      }
+
+      return res.json({
+        exists: true,
+        data: {
+          ...existingRecord,
+          results: parsedResult
+        }
+      });
+    }
+
+    return res.json({
+      exists: false
+    });
+
+  } catch (error) {
+    console.error('Error checking test execution evidence document:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+async function extractTextFromImage(apiKey, imageBase64) {
+  const prompt = `This image is a screenshot from MS active directory showing Policy settings, analyse the image and extract the settings into a JSON file`;
+
+  const requestBody = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        {
+          inline_data: {
+            mime_type: "image/png",
+            data: imageBase64
+          }
+        }
+      ]
+    }]
+  };
+
+  const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+  console.log('Calling Gemini API...');
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    console.error('Gemini API Error:', errorData);
+    throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+  }
+
+  const data = await response.json();
+  let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult); 
+  
+  return result;
+}
+
+async function convertImageUrlToBase64(imageUrl) {
+  try {
+    const finalPath = 'uploads/'.concat(imageUrl);
+    const imageBuffer = await fs.readFile(finalPath);
+    const base64 = imageBuffer.toString('base64');
+    
+    return base64;
+  } catch (error) {
+    throw new Error(`Error converting image to base64: ${error.message}`);
+  }
+}
+
