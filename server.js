@@ -16,6 +16,13 @@ app.use(cors()); // Allow cross-origin requests (from React)
 app.use(express.json({ limit: '50mb' })); // Parse JSON request bodies with increased limit for large imports
 app.use(express.urlencoded({ limit: '50mb', extended: true })); // Support URL-encoded bodies
 
+//Health check
+app.get('/api/health', (req, res) => {
+  const currentTime = new Date();
+  const today = currentTime.toLocaleString('en-UK');
+  res.json({ message: 'This is Hello from Flex API!', date: today });
+});
+
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
