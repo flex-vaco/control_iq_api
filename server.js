@@ -24,7 +24,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Serve static files from uploads directory
-app.use(express.static(path.join(__dirname, '../control_iq_ui/build')));
+app.use('/ui',express.static(path.join(__dirname, '../control_iq_ui/build')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // --- Routes ---
