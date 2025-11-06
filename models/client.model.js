@@ -6,7 +6,7 @@ const Client = {
     const [rows] = await db.query(
       `SELECT * FROM clients 
        WHERE tenant_id = ? AND deleted_at IS NULL
-       ORDER BY created_at DESC`,
+       ORDER BY client_name ASC`,
       [tenantId]
     );
     return rows;
