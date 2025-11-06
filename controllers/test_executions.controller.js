@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const multer = require('multer');
+const axios = require('axios');
 const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
@@ -457,21 +458,20 @@ exports.compareAttributes = async (req, res) => {
 
     const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${process.env.GEMINI_AI_KEY}`;
 
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
+    let response;
+    try {
+      response = await axios.post(apiUrl, requestBody, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (axiosError) {
+      const errorData = axiosError.response?.data || {};
       console.error('Gemini API Error:', errorData);
-      throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+      throw new Error(`API Error: ${errorData.error?.message || axiosError.message}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     let resultText = data.candidates[0].content.parts[0].text;
     resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     let parsedResult;
@@ -761,21 +761,20 @@ async function extractTextFromImage(apiKey, imageBase64) {
   const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
   console.log('Calling Gemini API...');
 
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(requestBody)
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json();
+  let response;
+  try {
+    response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (axiosError) {
+    const errorData = axiosError.response?.data || {};
     console.error('Gemini API Error:', errorData);
-    throw new Error(`API Error: ${errorData.error?.message || response.statusText}`);
+    throw new Error(`API Error: ${errorData.error?.message || axiosError.message}`);
   }
 
-  const data = await response.json();
+  const data = response.data;
   let resultText = data.candidates[0].content.parts[0].text;
     resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     let parsedResult;
