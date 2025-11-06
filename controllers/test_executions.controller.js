@@ -1,9 +1,32 @@
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
+const multer = require('multer');
 const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+
+// Multer configuration for execution evidence images
+const executionEvidenceStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = path.join(__dirname, '..', 'uploads', 'executionevidence');
+    fsSync.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    // Generate temporary filename - we'll rename it after we get control_id from body
+    const timestamp = Date.now();
+    const randomSuffix = Math.round(Math.random() * 1E9);
+    const tempFilename = `temp-${timestamp}-${randomSuffix}.png`;
+    cb(null, tempFilename);
+  }
+});
+
+const uploadExecutionEvidence = multer({ 
+  storage: executionEvidenceStorage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+}).single('image');
 
 // POST create a new test execution
 exports.createTestExecution = async (req, res) => {
@@ -45,8 +68,16 @@ exports.createTestExecution = async (req, res) => {
       tenantId
     );
 
-    const evidenceId = evidenceData ? evidenceData.evidence_id : null;
-    const testingStatus = evidenceData ? evidenceData.testing_status : null;
+    // Check if evidence exists - if not, return error and don't save
+    if (!evidenceData || !evidenceData.evidence_id) {
+      return res.status(404).json({ 
+        message: 'No PBC found with given Period and control. Please choose a different set.',
+        code: 'NO_EVIDENCE_FOUND'
+      });
+    }
+
+    const evidenceId = evidenceData.evidence_id;
+    const testingStatus = evidenceData.testing_status;
 
     // 3. Create test execution
     const testExecutionData = {
@@ -555,6 +586,159 @@ exports.checkTestExecutionEvidenceDocument = async (req, res) => {
     console.error('Error checking test execution evidence document:', error);
     res.status(500).json({ message: 'Server error.' });
   }
+};
+
+// POST save annotated image and update result_artifact_url
+exports.saveAnnotatedImage = (req, res) => {
+  uploadExecutionEvidence(req, res, async (err) => {
+    if (err) {
+      return res.status(400).json({ message: 'File upload error: ' + err.message });
+    }
+
+    try {
+      const { test_execution_id, evidence_document_id, control_id } = req.body;
+      const tenantId = req.user.tenantId;
+
+      // Validate control_id - check for undefined, null, or empty string
+      if (!test_execution_id || !evidence_document_id) {
+        // Clean up uploaded file if validation fails
+        if (req.file) {
+          fsSync.unlink(req.file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          });
+        }
+        return res.status(400).json({ 
+          message: 'Missing required fields: test_execution_id or evidence_document_id.' 
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ message: 'No image file provided.' });
+      }
+
+      if (!tenantId) {
+        // Clean up uploaded file if tenant ID is missing
+        if (req.file) {
+          fsSync.unlink(req.file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          });
+        }
+        return res.status(400).json({ message: 'Tenant ID is required.' });
+      }
+
+      // Get control_id - try from request body first, then from test execution
+      let finalControlId = control_id;
+      if (!finalControlId || finalControlId === 'undefined' || finalControlId === 'null' || String(finalControlId).trim() === '') {
+        console.warn('Control ID missing from request body, fetching from test execution');
+        const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+        if (testExecution && testExecution.control_id) {
+          finalControlId = testExecution.control_id;
+          console.log('Retrieved control_id from test execution:', finalControlId);
+        } else {
+          // Clean up uploaded file if we can't get control_id
+          if (req.file) {
+            fsSync.unlink(req.file.path, (unlinkErr) => {
+              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            });
+          }
+          return res.status(400).json({ 
+            message: 'Control ID is required and could not be retrieved from test execution.' 
+          });
+        }
+      }
+
+      // Rename the file with proper control_id
+      const timestamp = Date.now();
+      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.png`;
+      const finalPath = path.join(path.dirname(req.file.path), finalFilename);
+      
+      try {
+        await fsSync.promises.rename(req.file.path, finalPath);
+      } catch (renameError) {
+        console.error('Error renaming file:', renameError);
+        // Clean up uploaded file
+        if (req.file) {
+          fsSync.unlink(req.file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          });
+        }
+        return res.status(500).json({ 
+          message: 'Error saving file with proper filename.' 
+        });
+      }
+
+      // Construct the relative path for storage
+      const resultArtifactUrl = `executionevidence/${finalFilename}`;
+
+      // Check if record exists, if not create it first
+      let existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+        test_execution_id,
+        evidence_document_id,
+        tenantId
+      );
+
+      if (!existingRecord) {
+        // Create a basic record first (we'll update it with result later if needed)
+        // But for now, we just need the record to exist to update result_artifact_url
+        const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+        if (!testExecution) {
+          if (req.file) {
+            fsSync.unlink(req.file.path, (unlinkErr) => {
+              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            });
+          }
+          return res.status(404).json({ message: 'Test execution not found.' });
+        }
+
+        const testExecutionEvidenceDocumentData = {
+          test_execution_id: test_execution_id,
+          evidence_document_id: evidence_document_id,
+          rcm_id: testExecution.rcm_id,
+          tenant_id: tenantId,
+          client_id: testExecution.client_id,
+          result: null,
+          status: null,
+          total_attributes: null,
+          total_attributes_passed: null,
+          total_attributes_failed: null,
+          created_by: req.user.userId
+        };
+        await TestExecutionEvidenceDocuments.create(testExecutionEvidenceDocumentData);
+      }
+
+      // Update the result_artifact_url
+      const updated = await TestExecutionEvidenceDocuments.updateResultArtifactUrl(
+        test_execution_id,
+        evidence_document_id,
+        resultArtifactUrl,
+        tenantId
+      );
+
+      if (!updated) {
+        if (req.file) {
+          fsSync.unlink(req.file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          });
+        }
+        return res.status(404).json({ message: 'Failed to update result artifact URL.' });
+      }
+
+      res.json({ 
+        message: 'Annotated image saved successfully.',
+        result_artifact_url: resultArtifactUrl
+      });
+
+    } catch (error) {
+      // Clean up uploaded file on error
+      if (req.file) {
+        fsSync.unlink(req.file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file after error:", unlinkErr);
+        });
+      }
+      console.error('Error saving annotated image:', error);
+      res.status(500).json({ message: 'Server error during image save.' });
+    }
+  });
 };
 
 async function extractTextFromImage(apiKey, imageBase64) {

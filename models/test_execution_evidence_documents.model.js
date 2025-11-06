@@ -22,6 +22,17 @@ const TestExecutionEvidenceDocuments = {
       [testExecutionId, evidenceDocumentId, tenantId]
     );
     return rows[0] || null;
+  },
+
+  // Update result_artifact_url for a test execution evidence document
+  updateResultArtifactUrl: async (testExecutionId, evidenceDocumentId, resultArtifactUrl, tenantId) => {
+    const [result] = await db.query(
+      `UPDATE test_execution_evidence_documents 
+       SET result_artifact_url = ?
+       WHERE test_execution_id = ? AND evidence_document_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [resultArtifactUrl, testExecutionId, evidenceDocumentId, tenantId]
+    );
+    return result.affectedRows > 0;
   }
 };
 
