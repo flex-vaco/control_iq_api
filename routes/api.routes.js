@@ -50,5 +50,6 @@ router.put('/test-executions/remarks', verifyToken, testExecutionsController.upd
 router.post('/evidence-ai-details', verifyToken, testExecutionsController.getEvidenceAIDetails);
 router.post('/compare-attributes', verifyToken, testExecutionsController.compareAttributes);
 router.get('/check-test-execution-evidence', verifyToken, testExecutionsController.checkTestExecutionEvidenceDocument);
+router.post('/save-annotated-image', verifyToken, testExecutionsController.saveAnnotatedImage);
 
 module.exports = router;

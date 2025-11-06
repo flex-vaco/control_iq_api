@@ -26,7 +26,7 @@ app.get('/ui', (req, res) => {
 app.get('/api/health', (req, res) => {
   const currentTime = new Date();
   const today = currentTime.toLocaleString('en-UK');
-  res.json({ message: 'This is Hello from Flex API!', date: today });
+  res.json({ message: 'This is Hello from ControlIQ API!', date: today });
 });
 
 // Serve static files from uploads directory
