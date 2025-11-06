@@ -33,6 +33,22 @@ const TestExecutionEvidenceDocuments = {
       [resultArtifactUrl, testExecutionId, evidenceDocumentId, tenantId]
     );
     return result.affectedRows > 0;
+  },
+
+  // Get all test execution evidence documents for a test execution with evidence names
+  findByTestExecutionId: async (testExecutionId, tenantId) => {
+    const [rows] = await db.query(
+      `SELECT 
+        teed.*,
+        e.evidence_name
+       FROM test_execution_evidence_documents teed
+       JOIN evidence_documents ed ON teed.evidence_document_id = ed.document_id
+       JOIN evidences e ON ed.evidence_id = e.evidence_id
+       WHERE teed.test_execution_id = ? AND teed.tenant_id = ? AND teed.deleted_at IS NULL
+       ORDER BY teed.created_at DESC`,
+      [testExecutionId, tenantId]
+    );
+    return rows;
   }
 };
 

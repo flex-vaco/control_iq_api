@@ -561,10 +561,14 @@ exports.checkTestExecutionEvidenceDocument = async (req, res) => {
     );
 
     if (existingRecord) {
-      // Parse the result JSON string
+      // Parse the result JSON (could be string or object depending on MySQL driver)
       let parsedResult = null;
       try {
-        parsedResult = existingRecord.result;
+        if (typeof existingRecord.result === 'string') {
+          parsedResult = JSON.parse(existingRecord.result);
+        } else {
+          parsedResult = existingRecord.result;
+        }
       } catch (parseError) {
         console.error('Error parsing result JSON:', parseError);
       }
@@ -584,6 +588,54 @@ exports.checkTestExecutionEvidenceDocument = async (req, res) => {
 
   } catch (error) {
     console.error('Error checking test execution evidence document:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET all test execution evidence documents for a test execution
+exports.getTestExecutionEvidenceDocuments = async (req, res) => {
+  try {
+    const { test_execution_id } = req.query;
+    const tenantId = req.user.tenantId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    const records = await TestExecutionEvidenceDocuments.findByTestExecutionId(
+      test_execution_id,
+      tenantId
+    );
+
+    // Parse result JSON for each record
+    const parsedRecords = records.map(record => {
+      let parsedResult = null;
+      try {
+        if (record.result) {
+          parsedResult = typeof record.result === 'string' 
+            ? JSON.parse(record.result) 
+            : record.result;
+        }
+      } catch (parseError) {
+        console.error('Error parsing result JSON:', parseError);
+      }
+
+      return {
+        ...record,
+        result_parsed: parsedResult
+      };
+    });
+
+    return res.json({
+      data: parsedRecords
+    });
+
+  } catch (error) {
+    console.error('Error fetching test execution evidence documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
