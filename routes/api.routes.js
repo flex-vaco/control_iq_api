@@ -8,7 +8,7 @@ const pbcController = require('../controllers/pbc.controller');
 const attributesController = require('../controllers/attributes.controller');
 const clientController = require('../controllers/company.controller');
 const testExecutionsController = require('../controllers/test_executions.controller');
-
+const aiDbAgentController = require('../controllers/ai_db_agent.controller');
 // --- Protected Routes ---
 
 // RCM Routes
@@ -51,5 +51,8 @@ router.post('/evidence-ai-details', verifyToken, testExecutionsController.getEvi
 router.post('/compare-attributes', verifyToken, testExecutionsController.compareAttributes);
 router.get('/check-test-execution-evidence', verifyToken, testExecutionsController.checkTestExecutionEvidenceDocument);
 router.post('/save-annotated-image', verifyToken, testExecutionsController.saveAnnotatedImage);
+
+// AI Agent for DB querying Route
+router.post('/ai-db-agent/query', verifyToken, aiDbAgentController.getAIDBAgentHomePage);
 
 module.exports = router;
