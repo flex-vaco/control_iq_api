@@ -16,7 +16,7 @@ const RCM = {
       SELECT r.*, c.client_name 
       FROM rcm r
       JOIN clients c ON r.client_id = c.client_id
-      WHERE r.tenant_id = ? AND r.deleted_at IS NULL ORDER BY r.control_id ASC
+      WHERE r.tenant_id = ? AND r.deleted_at IS NULL
     `;
     const params = [tenantId];
     
@@ -25,7 +25,7 @@ const RCM = {
       params.push(clientId);
     }
     
-    query += ' ORDER BY r.created_at DESC';
+    query += ' ORDER BY r.control_id ASC';
     
     const [rows] = await db.query(query, params);
     return rows;
