@@ -4,7 +4,7 @@ const RCM = {
   // Finds all RCM records for a specific client
   findAllByClient: async (clientId, tenantId) => {
     const [rows] = await db.query(
-      'SELECT * FROM rcm WHERE client_id = ? AND tenant_id = ? AND deleted_at IS NULL',
+      'SELECT * FROM rcm WHERE client_id = ? AND tenant_id = ? AND deleted_at IS NULL ORDER BY control_id ASC',
       [clientId, tenantId]
     );
     return rows;
@@ -16,7 +16,7 @@ const RCM = {
       SELECT r.*, c.client_name 
       FROM rcm r
       JOIN clients c ON r.client_id = c.client_id
-      WHERE r.tenant_id = ? AND r.deleted_at IS NULL
+      WHERE r.tenant_id = ? AND r.deleted_at IS NULL ORDER BY r.control_id ASC
     `;
     const params = [tenantId];
     
