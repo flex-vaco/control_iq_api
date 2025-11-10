@@ -164,6 +164,40 @@ const PBC = {
     );
     return rows[0] || null;
   },
+
+  // Check if a combination of rcm_id, year, and quarter already exists
+  checkDuplicate: async (rcmId, year, quarter, tenantId, excludeEvidenceId = null) => {
+    let query = `
+      SELECT e.evidence_id, r.control_id
+      FROM evidences e
+      JOIN rcm r ON e.rcm_id = r.rcm_id
+      WHERE e.rcm_id = ? AND e.year = ? AND e.quarter = ? 
+        AND e.tenant_id = ? AND e.deleted_at IS NULL
+    `;
+    const params = [rcmId, year, quarter, tenantId];
+    
+    if (excludeEvidenceId) {
+      query += ' AND e.evidence_id != ?';
+      params.push(excludeEvidenceId);
+    }
+    
+    query += ' LIMIT 1';
+    
+    const [rows] = await db.query(query, params);
+    return rows.length > 0 ? rows[0] : null;
+  },
+
+  // Get evidence documents by evidence_id
+  getEvidenceDocuments: async (evidenceId, tenantId) => {
+    const [rows] = await db.query(
+      `SELECT document_id, artifact_url, created_date, created_at
+       FROM evidence_documents
+       WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL
+       ORDER BY created_date DESC, created_at DESC`,
+      [evidenceId, tenantId]
+    );
+    return rows;
+  },
 };
 
 module.exports = PBC;
