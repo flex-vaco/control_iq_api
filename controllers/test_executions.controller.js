@@ -118,6 +118,56 @@ exports.createTestExecution = async (req, res) => {
   }
 };
 
+// GET check if duplicate test execution exists (control_id, year, quarter combination)
+exports.checkDuplicateTestExecution = async (req, res) => {
+  console.log('checkDuplicateTestExecution');
+  try {
+    const { control_id, year, quarter, client_id } = req.query;
+    const tenantId = req.user.tenantId;
+
+    if (!control_id || !year || !quarter || !client_id) {
+      return res.status(400).json({ 
+        exists: false, 
+        message: 'Control ID, Year, Quarter, and Client ID are required.' 
+      });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+    console.log(control_id, year, quarter, client_id);
+    // Get the RCM Primary Key (rcm_id) from the selected control_id
+    const rcmId = await RCM.findRcmIdByControlId(control_id, client_id, tenantId);
+    if (!rcmId) {
+      return res.status(404).json({ 
+        exists: false, 
+        message: `RCM Control ID '${control_id}' not found for this client.` 
+      });
+    }
+    console.log(rcmId);
+    // Check for duplicate
+    const duplicate = await TestExecution.checkDuplicate(
+      rcmId, 
+      parseInt(year), 
+      quarter, 
+      tenantId
+    );
+    console.log(duplicate);
+    if (duplicate) {
+      return res.json({ 
+        exists: true, 
+        message: 'Test execution already exists for this control, year, and quarter combination.',
+        control_id: duplicate.control_id
+      });
+    }
+
+    return res.json({ exists: false, message: 'No duplicate found.' });
+  } catch (error) {
+    console.error('Error checking duplicate test execution:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
 // GET evidence documents and test attributes for a control_id
 exports.getTestExecutionData = async (req, res) => {
   try {

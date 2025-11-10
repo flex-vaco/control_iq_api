@@ -109,6 +109,23 @@ const TestExecution = {
     
     const [rows] = await db.query(query, params);
     return rows;
+  },
+
+  // Check for duplicate test execution (rcm_id, year, quarter combination)
+  checkDuplicate: async (rcmId, year, quarter, tenantId) => {
+    let query = `
+      SELECT te.test_execution_id, r.control_id
+      FROM test_executions te
+      JOIN rcm r ON te.rcm_id = r.rcm_id
+      WHERE te.rcm_id = ? AND te.year = ? AND te.quarter = ? 
+        AND te.tenant_id = ? AND te.deleted_at IS NULL
+    `;
+    const params = [rcmId, year, quarter, tenantId];
+    
+    query += ' LIMIT 1';
+    
+    const [rows] = await db.query(query, params);
+    return rows.length > 0 ? rows[0] : null;
   }
 };
 

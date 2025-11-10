@@ -42,10 +42,11 @@ router.delete('/clients/:id', verifyToken, clientController.deleteClient);
 
 // Test Executions Routes
 router.get('/test-executions', verifyToken, testExecutionsController.getAllTestExecutions);
-router.get('/test-executions/:id', verifyToken, testExecutionsController.getTestExecutionById);
-router.post('/test-executions', verifyToken, testExecutionsController.createTestExecution);
+router.get('/test-executions/check-duplicate', verifyToken, testExecutionsController.checkDuplicateTestExecution);
 router.get('/test-executions/data', verifyToken, testExecutionsController.getTestExecutionData);
 router.get('/test-executions/preview', verifyToken, testExecutionsController.getEvidenceDataForTesting);
+router.get('/test-executions/:id', verifyToken, testExecutionsController.getTestExecutionById);
+router.post('/test-executions', verifyToken, testExecutionsController.createTestExecution);
 router.put('/test-executions/remarks', verifyToken, testExecutionsController.updateTestExecutionRemarks);
 
 // Evidence AI Details Route
