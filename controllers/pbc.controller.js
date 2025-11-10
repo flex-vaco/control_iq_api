@@ -53,6 +53,56 @@ exports.getAvailableRcmControls = async (req, res) => {
   }
 };
 
+// GET check if duplicate PBC exists (control_id, year, quarter combination)
+exports.checkDuplicatePbc = async (req, res) => {
+  try {
+    const { control_id, year, quarter, client_id, evidence_id } = req.query;
+    const tenantId = req.user.tenantId;
+
+    if (!control_id || !year || !quarter || !client_id) {
+      return res.status(400).json({ 
+        exists: false, 
+        message: 'Control ID, Year, Quarter, and Client ID are required.' 
+      });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    // Get the RCM Primary Key (rcm_id) from the selected control_id
+    const rcmId = await RCM.findRcmIdByControlId(control_id, client_id, tenantId);
+    if (!rcmId) {
+      return res.status(404).json({ 
+        exists: false, 
+        message: `RCM Control ID '${control_id}' not found for this client.` 
+      });
+    }
+
+    // Check for duplicate (exclude current evidence_id if editing)
+    const duplicate = await PBC.checkDuplicate(
+      rcmId, 
+      year, 
+      quarter, 
+      tenantId, 
+      evidence_id || null
+    );
+
+    if (duplicate) {
+      return res.json({ 
+        exists: true, 
+        message: 'PBC already exists ,edit it for adding new evidences',
+        control_id: duplicate.control_id
+      });
+    }
+
+    return res.json({ exists: false, message: 'No duplicate found.' });
+  } catch (error) {
+    console.error('Error checking duplicate PBC:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
 // GET all existing Evidence (PBC) requests for the client
 exports.getAllEvidence = async (req, res) => {
   try {
@@ -258,6 +308,28 @@ exports.deleteEvidence = async (req, res) => {
   } catch (error) {
     console.error('Error deleting Evidence:', error);
     res.status(500).json({ message: 'Server error during evidence deletion.' });
+  }
+};
+
+// GET evidence documents by evidence_id
+exports.getEvidenceDocuments = async (req, res) => {
+  try {
+    const evidenceId = req.params.id;
+    const tenantId = req.user.tenantId;
+
+    if (!evidenceId) {
+      return res.status(400).json({ message: 'Evidence ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const documents = await PBC.getEvidenceDocuments(evidenceId, tenantId);
+    res.json(documents);
+  } catch (error) {
+    console.error('Error fetching evidence documents:', error);
+    res.status(500).json({ message: 'Server error.' });
   }
 };
 
