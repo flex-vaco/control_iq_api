@@ -352,6 +352,11 @@ exports.getTestExecutionById = async (req, res) => {
       ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
       : [];
     
+    const evidenceDetails = await PBC.findById(testExecution.pcb_id, tenantId);
+    if (!evidenceDetails) {
+      return res.status(404).json({ message: 'Evidence details not found.' });
+    }
+
     // Get test attributes by rcm_id
     const testAttributes = await TestExecution.getTestAttributesByRcmId(testExecution.rcm_id, tenantId);
 
@@ -359,7 +364,8 @@ exports.getTestExecutionById = async (req, res) => {
       test_execution: testExecution,
       rcm_details: rcmDetails,
       evidence_documents: evidenceDocuments,
-      test_attributes: testAttributes
+      test_attributes: testAttributes,
+      evidence_details: evidenceDetails
     });
 
   } catch (error) {

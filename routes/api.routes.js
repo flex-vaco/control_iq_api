@@ -23,6 +23,7 @@ router.post('/pbc', verifyToken, pbcController.createEvidence); // Create new ev
 router.put('/pbc/:id', verifyToken, pbcController.updateEvidence); // Update evidence request
 router.delete('/pbc/:id', verifyToken, pbcController.deleteEvidence); // Delete evidence request
 router.get('/pbc/:id/documents', verifyToken, pbcController.getEvidenceDocuments); // Get evidence documents
+router.post('/pbc/:id/add-documents', verifyToken, pbcController.addEvidenceDocuments); // Add documents to existing evidence
 router.get('/rcm-controls', verifyToken, pbcController.getAvailableRcmControls); // Fetch RCM data for PBC creation
 router.get('/pbc/check-duplicate', verifyToken, pbcController.checkDuplicatePbc); // Check for duplicate PBC
 

@@ -38,7 +38,7 @@ const TestExecution = {
   // Get evidence documents by evidence_id with evidence_name
   getEvidenceDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details
+      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name
        FROM evidence_documents ed
        JOIN evidences e ON ed.evidence_id = e.evidence_id
        WHERE ed.evidence_id = ? AND ed.tenant_id = ? AND ed.deleted_at IS NULL

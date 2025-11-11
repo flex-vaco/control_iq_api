@@ -76,15 +76,16 @@ const PBC = {
           evidenceId,
           evidenceData.tenant_id,
           evidenceData.client_id,
+          doc.document_name || null,
           doc.artifact_url,
           evidenceData.created_by
         ]).flat();
 
-        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?)').join(', ');
+        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
         
         await connection.query(
           `INSERT INTO evidence_documents 
-            (evidence_id, tenant_id, client_id, artifact_url, created_by)
+            (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by)
            VALUES ${placeholders}`,
           docValues
         );
@@ -190,7 +191,7 @@ const PBC = {
   // Get evidence documents by evidence_id
   getEvidenceDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT document_id, artifact_url, created_date, created_at
+      `SELECT document_id, artifact_url, document_name, created_date, created_at
        FROM evidence_documents
        WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL
        ORDER BY created_date DESC, created_at DESC`,
