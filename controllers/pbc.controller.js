@@ -192,9 +192,15 @@ exports.createEvidence = (req, res) => {
         created_by: userId,
       };
 
-      const documentsData = req.files ? req.files.map(file => ({
-        artifact_url: `evidences/${file.filename}`, // Relative path for storage
-      })) : [];
+      const documentsData = req.files ? req.files.map(file => {
+        // Extract original filename without extension
+        const originalName = file.originalname || '';
+        const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+        return {
+          artifact_url: `evidences/${file.filename}`, // Relative path for storage
+          document_name: nameWithoutExt || null
+        };
+      }) : [];
 
       // 3. Execute Transaction
       const result = await PBC.createEvidenceAndDocuments(evidenceData, documentsData);
@@ -256,9 +262,15 @@ exports.updateEvidence = (req, res) => {
 
       // Handle file uploads if any (similar to create)
       if (req.files && req.files.length > 0) {
-        const documentsData = req.files.map(file => ({
-          artifact_url: `evidences/${file.filename}`,
-        }));
+        const documentsData = req.files.map(file => {
+          // Extract original filename without extension
+          const originalName = file.originalname || '';
+          const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+          return {
+            artifact_url: `evidences/${file.filename}`,
+            document_name: nameWithoutExt || null
+          };
+        });
         // Add documents to existing evidence
         const connection = await db.getConnection();
         try {
@@ -266,12 +278,13 @@ exports.updateEvidence = (req, res) => {
             evidenceId,
             tenantId,
             client_id,
+            doc.document_name,
             doc.artifact_url,
             userId
           ]).flat();
-          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?)').join(', ');
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
           await connection.query(
-            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, artifact_url, created_by) VALUES ${placeholders}`,
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by) VALUES ${placeholders}`,
             docValues
           );
         } finally {
@@ -331,5 +344,116 @@ exports.getEvidenceDocuments = async (req, res) => {
     console.error('Error fetching evidence documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
+};
+
+// POST add documents to existing evidence
+exports.addEvidenceDocuments = (req, res) => {
+  upload(req, res, async (err) => {
+    if (err) {
+      console.error('Multer file upload error:', err);
+      if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ message: 'File upload error: ' + err.message });
+      }
+      return res.status(500).json({ message: 'File upload failed.' });
+    }
+    
+    try {
+      const evidenceId = req.params.id;
+      const tenantId = req.user.tenantId;
+      const userId = req.user.userId;
+
+      if (!evidenceId) {
+        // Clean up uploaded files if validation fails
+        if (req.files) {
+          req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          }));
+        }
+        return res.status(400).json({ message: 'Evidence ID is required.' });
+      }
+
+      if (!tenantId) {
+        // Clean up uploaded files if validation fails
+        if (req.files) {
+          req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          }));
+        }
+        return res.status(400).json({ message: 'Tenant ID is required.' });
+      }
+
+      // Verify evidence exists and get client_id
+      const evidence = await PBC.findById(evidenceId, tenantId);
+      if (!evidence) {
+        // Clean up uploaded files if evidence not found
+        if (req.files) {
+          req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          }));
+        }
+        return res.status(404).json({ message: 'Evidence not found.' });
+      }
+
+      // Handle file uploads if any
+      if (req.files && req.files.length > 0) {
+        const documentsData = req.files.map(file => {
+          // Extract original filename without extension
+          const originalName = file.originalname || '';
+          const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+          return {
+            artifact_url: `evidences/${file.filename}`,
+            document_name: nameWithoutExt || null
+          };
+        });
+        
+        // Add documents to existing evidence
+        const connection = await db.getConnection();
+        await connection.beginTransaction();
+        try {
+          const docValues = documentsData.map(doc => [
+            evidenceId,
+            tenantId,
+            evidence.client_id,
+            doc.document_name,
+            doc.artifact_url,
+            userId
+          ]).flat();
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+          await connection.query(
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by) VALUES ${placeholders}`,
+            docValues
+          );
+          await connection.commit();
+        } catch (dbError) {
+          await connection.rollback();
+          // Clean up uploaded files on DB error
+          if (req.files) {
+            req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            }));
+          }
+          throw dbError;
+        } finally {
+          connection.release();
+        }
+      } else {
+        return res.status(400).json({ message: 'No files provided for upload.' });
+      }
+
+      res.status(201).json({ 
+        message: 'Documents added successfully.',
+        count: req.files.length
+      });
+    } catch (error) {
+      // If DB fails, clean up the uploaded files
+      if (req.files) {
+        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
+          if (unlinkErr) console.error("Failed to delete temp file after DB error:", unlinkErr);
+        }));
+      }
+      console.error('Error adding evidence documents:', error);
+      res.status(500).json({ message: 'Server error during document upload.' });
+    }
+  });
 };
 
