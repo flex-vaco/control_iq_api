@@ -457,3 +457,31 @@ exports.addEvidenceDocuments = (req, res) => {
   });
 };
 
+// DELETE evidence document
+exports.deleteEvidenceDocument = async (req, res) => {
+  try {
+    const documentId = req.params.documentId;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!documentId) {
+      return res.status(400).json({ message: 'Document ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const deleted = await PBC.deleteEvidenceDocument(documentId, tenantId, userId);
+    
+    if (!deleted) {
+      return res.status(404).json({ message: 'Document not found or already deleted.' });
+    }
+
+    res.json({ message: 'Document deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting evidence document:', error);
+    res.status(500).json({ message: 'Server error during document deletion.' });
+  }
+};
+

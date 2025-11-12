@@ -199,6 +199,17 @@ const PBC = {
     );
     return rows;
   },
+
+  // Delete evidence document (soft delete)
+  deleteEvidenceDocument: async (documentId, tenantId, userId) => {
+    const [result] = await db.query(
+      `UPDATE evidence_documents 
+       SET deleted_at = NOW(), deleted_by = ?
+       WHERE document_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [userId, documentId, tenantId]
+    );
+    return result.affectedRows > 0;
+  },
 };
 
 module.exports = PBC;
