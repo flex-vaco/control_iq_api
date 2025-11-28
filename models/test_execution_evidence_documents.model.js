@@ -49,6 +49,17 @@ const TestExecutionEvidenceDocuments = {
       [testExecutionId, tenantId]
     );
     return rows;
+  },
+
+  // Update result JSON with manual changes to attribute_final_result and manual_final_result
+  updateResult: async (testExecutionId, evidenceDocumentId, updatedResult, tenantId, userId) => {
+    const [result] = await db.query(
+      `UPDATE test_execution_evidence_documents 
+       SET result = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND evidence_document_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [JSON.stringify(updatedResult), userId, testExecutionId, evidenceDocumentId, tenantId]
+    );
+    return result.affectedRows > 0;
   }
 };
 

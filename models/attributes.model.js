@@ -15,22 +15,29 @@ const Attributes = {
   },
 
   // Find all Test Attributes records for a tenant (optionally filtered by client_id) with client_name
-  findAll: async (tenantId, clientId = null) => {
+  // tenantId can be null for super admin to see all data
+  findAll: async (tenantId = null, clientId = null) => {
     let query = `
-      SELECT ta.*, r.control_id, r.control_description, c.client_name
+      SELECT ta.*, r.control_id, r.control_description, c.client_name, t.tenant_name
       FROM test_attributes ta
       JOIN rcm r ON ta.rcm_id = r.rcm_id
       JOIN clients c ON ta.client_id = c.client_id
-      WHERE ta.tenant_id = ? AND ta.deleted_at IS NULL
+      LEFT JOIN tenants t ON ta.tenant_id = t.tenant_id
+      WHERE ta.deleted_at IS NULL
     `;
-    const params = [tenantId];
+    const params = [];
+    
+    if (tenantId !== null) {
+      query += ' AND ta.tenant_id = ?';
+      params.push(tenantId);
+    }
     
     if (clientId) {
       query += ' AND ta.client_id = ?';
       params.push(clientId);
     }
     
-    query += ' ORDER BY ta.created_at DESC';
+    query += ' ORDER BY t.tenant_name, ta.created_at DESC';
     
     const [rows] = await db.query(query, params);
     return rows;

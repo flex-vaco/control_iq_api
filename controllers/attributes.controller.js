@@ -1,14 +1,14 @@
 const Attributes = require('../models/attributes.model');
 const RCM = require('../models/rcm.model');
+const { isSuperAdmin } = require('../utils/auth.helper');
 
 // GET all Attributes records
 exports.getAllAttributes = async (req, res) => {
   try {
     const clientId = req.query.client_id || null;
-    const tenantId = req.user.tenantId;
-    if (!tenantId) {
-      return res.status(400).json({ message: 'Tenant ID is required.' });
-    }
+    const requestedTenantId = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+    // Super admin can see all data or filter by tenant, regular users see only their tenant
+    const tenantId = isSuperAdmin(req.user) ? requestedTenantId : req.user.tenantId;
     // Use findAll to get data with client_name (supports both filtered and unfiltered)
     const data = await Attributes.findAll(tenantId, clientId);
     res.json(data);

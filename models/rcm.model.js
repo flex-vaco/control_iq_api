@@ -11,21 +11,28 @@ const RCM = {
   },
 
   // Finds all RCM records for a tenant (optionally filtered by client_id) with client_name
-  findAll: async (tenantId, clientId = null) => {
+  // tenantId can be null for super admin to see all data
+  findAll: async (tenantId = null, clientId = null) => {
     let query = `
-      SELECT r.*, c.client_name 
+      SELECT r.*, c.client_name, t.tenant_name
       FROM rcm r
       JOIN clients c ON r.client_id = c.client_id
-      WHERE r.tenant_id = ? AND r.deleted_at IS NULL
+      LEFT JOIN tenants t ON r.tenant_id = t.tenant_id
+      WHERE r.deleted_at IS NULL
     `;
-    const params = [tenantId];
+    const params = [];
+    
+    if (tenantId !== null) {
+      query += ' AND r.tenant_id = ?';
+      params.push(tenantId);
+    }
     
     if (clientId) {
       query += ' AND r.client_id = ?';
       params.push(clientId);
     }
     
-    query += ' ORDER BY r.control_id ASC';
+    query += ' ORDER BY t.tenant_name, r.control_id ASC';
     
     const [rows] = await db.query(query, params);
     return rows;

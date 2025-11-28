@@ -277,11 +277,10 @@ exports.getEvidenceDataForTesting = async (req, res) => {
 exports.getAllTestExecutions = async (req, res) => {
   try {
     const clientId = req.query.client_id || null;
-    const tenantId = req.user.tenantId;
-
-    if (!tenantId) {
-      return res.status(400).json({ message: 'Tenant ID is required.' });
-    }
+    const requestedTenantId = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+    const { isSuperAdmin } = require('../utils/auth.helper');
+    // Super admin can see all data or filter by tenant, regular users see only their tenant
+    const tenantId = isSuperAdmin(req.user) ? requestedTenantId : req.user.tenantId;
 
     const data = await TestExecution.findAllByClient(clientId, tenantId);
     res.json(data);
@@ -347,9 +346,14 @@ exports.getTestExecutionById = async (req, res) => {
     // Get RCM details including classification
     const rcmDetails = await RCM.findById(testExecution.rcm_id, tenantId);
     
-    // Get evidence documents
+    // Get evidence documents (excludes policy documents)
     const evidenceDocuments = testExecution.pcb_id 
       ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
+      : [];
+    
+    // Get policy documents
+    const policyDocuments = testExecution.pcb_id 
+      ? await TestExecution.getPolicyDocuments(testExecution.pcb_id, tenantId)
       : [];
     
     const evidenceDetails = await PBC.findById(testExecution.pcb_id, tenantId);
@@ -364,6 +368,7 @@ exports.getTestExecutionById = async (req, res) => {
       test_execution: testExecution,
       rcm_details: rcmDetails,
       evidence_documents: evidenceDocuments,
+      policy_documents: policyDocuments,
       test_attributes: testAttributes,
       evidence_details: evidenceDetails
     });
@@ -486,23 +491,27 @@ exports.compareAttributes = async (req, res) => {
           "attribute_description": "string", 
           "test_steps": "string",
           "result": boolean,
-          "reason": "string explaining match/mismatch based on context"
+          "reason": "string explaining match/mismatch based on context",
+          "attribute_final_result": boolean
         }
       ],
       summary: "string",
       total_attributes: number,
       total_attributes_passed: number,
       total_attributes_failed: number,
-      final_result: boolean
+      final_result: boolean,
+      manual_final_result: boolean
     }
     
     Rules:
     - result=true if evidence contextually satisfies the requirement
+    - attribute_final_result same as result
     - result=false if evidence contradicts or is missing
     - Compare meaning, not exact wording
     - For numeric values, check if condition is met (>=, <=, ==)
     - Be strict but contextually aware
-    - final_result is true if all attributes are passed, false otherwise`;
+    - final_result is true if all attributes are passed, false otherwise
+    - manual_final_result is same as final_result`;
 
     const requestBody = {
       contents: [{
@@ -897,6 +906,124 @@ async function extractTextFromImage(apiKey, imageBase64) {
   
   return result;
 }
+
+// PUT update test execution evidence document result (attribute_final_result and manual_final_result)
+exports.updateTestExecutionEvidenceResult = async (req, res) => {
+  try {
+    const { test_execution_id, evidence_document_id, updated_result } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id || !evidence_document_id) {
+      return res.status(400).json({ message: 'Test execution ID and evidence document ID are required.' });
+    }
+
+    if (!updated_result) {
+      return res.status(400).json({ message: 'Updated result is required.' });
+    }
+
+    // Check if test execution is completed - if so, don't allow updates
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    if (testExecution.status === 'completed') {
+      return res.status(400).json({ message: 'Cannot update results when test execution is completed.' });
+    }
+
+    // Get existing record
+    const existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+      test_execution_id,
+      evidence_document_id,
+      tenantId
+    );
+
+    if (!existingRecord) {
+      return res.status(404).json({ message: 'Test execution evidence document not found.' });
+    }
+
+    // Update the result
+    const updated = await TestExecutionEvidenceDocuments.updateResult(
+      test_execution_id,
+      evidence_document_id,
+      updated_result,
+      tenantId,
+      userId
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Failed to update result.' });
+    }
+
+    res.json({ message: 'Test execution evidence result updated successfully.' });
+  } catch (error) {
+    console.error('Error updating test execution evidence result:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// PUT update test execution status and result
+exports.updateTestExecutionStatusAndResult = async (req, res) => {
+  try {
+    const { test_execution_id, status, result } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    if (!status || !result) {
+      return res.status(400).json({ message: 'Status and result are required.' });
+    }
+
+    // Validate status
+    if (!['pending', 'in_progress', 'completed', 'failed'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value.' });
+    }
+
+    // Validate result
+    if (!['pass', 'fail', 'partial', 'na'].includes(result)) {
+      return res.status(400).json({ message: 'Invalid result value.' });
+    }
+
+    // Check if already completed - if so, don't allow changes
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    if (testExecution.status === 'completed' && status !== 'completed') {
+      return res.status(400).json({ message: 'Cannot change status from completed. This action cannot be reverted.' });
+    }
+
+    const updated = await TestExecution.updateStatusAndResult(
+      test_execution_id,
+      status,
+      result,
+      tenantId,
+      userId
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Failed to update test execution status and result.' });
+    }
+
+    res.json({ message: 'Test execution status and result updated successfully.' });
+  } catch (error) {
+    console.error('Error updating test execution status and result:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
 
 async function convertImageUrlToBase64(imageUrl) {
   try {

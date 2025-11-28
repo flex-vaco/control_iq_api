@@ -8,6 +8,9 @@ const pbcController = require('../controllers/pbc.controller');
 const attributesController = require('../controllers/attributes.controller');
 const clientController = require('../controllers/company.controller');
 const testExecutionsController = require('../controllers/test_executions.controller');
+const userController = require('../controllers/user.controller');
+const roleController = require('../controllers/role.controller');
+const permissionController = require('../controllers/permission.controller');
 
 // --- Protected Routes ---
 
@@ -22,7 +25,8 @@ router.get('/pbc', verifyToken, pbcController.getAllEvidence); // Fetch all evid
 router.post('/pbc', verifyToken, pbcController.createEvidence); // Create new evidence request
 router.put('/pbc/:id', verifyToken, pbcController.updateEvidence); // Update evidence request
 router.delete('/pbc/:id', verifyToken, pbcController.deleteEvidence); // Delete evidence request
-router.get('/pbc/:id/documents', verifyToken, pbcController.getEvidenceDocuments); // Get evidence documents
+router.get('/pbc/:id/documents', verifyToken, pbcController.getEvidenceDocuments); // Get evidence documents (excludes policy)
+router.get('/pbc/:id/policy-documents', verifyToken, pbcController.getPolicyDocuments); // Get policy documents only
 router.post('/pbc/:id/add-documents', verifyToken, pbcController.addEvidenceDocuments); // Add documents to existing evidence
 router.delete('/pbc/documents/:documentId', verifyToken, pbcController.deleteEvidenceDocument); // Delete evidence document
 router.get('/rcm-controls', verifyToken, pbcController.getAvailableRcmControls); // Fetch RCM data for PBC creation
@@ -57,5 +61,28 @@ router.post('/compare-attributes', verifyToken, testExecutionsController.compare
 router.get('/check-test-execution-evidence', verifyToken, testExecutionsController.checkTestExecutionEvidenceDocument);
 router.get('/test-execution-evidence-documents', verifyToken, testExecutionsController.getTestExecutionEvidenceDocuments);
 router.post('/save-annotated-image', verifyToken, testExecutionsController.saveAnnotatedImage);
+router.put('/test-execution-evidence-result', verifyToken, testExecutionsController.updateTestExecutionEvidenceResult);
+router.put('/test-executions/status-result', verifyToken, testExecutionsController.updateTestExecutionStatusAndResult);
+
+// User Management Routes
+router.get('/users', verifyToken, userController.getAllUsers);
+router.get('/users/:id', verifyToken, userController.getUserById);
+router.post('/users', verifyToken, userController.createUser);
+router.put('/users/:id', verifyToken, userController.updateUser);
+router.delete('/users/:id', verifyToken, userController.deleteUser);
+
+// Role Management Routes
+router.get('/roles', verifyToken, roleController.getAllRoles);
+router.get('/roles/:id', verifyToken, roleController.getRoleById);
+router.post('/roles', verifyToken, roleController.createRole);
+router.put('/roles/:id', verifyToken, roleController.updateRole);
+router.delete('/roles/:id', verifyToken, roleController.deleteRole);
+
+// Permission/Access Control Routes
+router.get('/permissions/role/:roleId', verifyToken, permissionController.getPermissionsByRole);
+router.get('/permissions/my-permissions', verifyToken, permissionController.getMyPermissions);
+router.put('/permissions/role/:roleId', verifyToken, permissionController.updatePermissions);
+router.get('/permissions/resources', verifyToken, permissionController.getAvailableResources);
+router.get('/permissions/tenants', verifyToken, permissionController.getAllTenants);
 
 module.exports = router;
