@@ -19,14 +19,42 @@ const executionEvidenceStorage = multer.diskStorage({
     // Generate temporary filename - we'll rename it after we get control_id from body
     const timestamp = Date.now();
     const randomSuffix = Math.round(Math.random() * 1E9);
-    const tempFilename = `temp-${timestamp}-${randomSuffix}.png`;
+    // Preserve original file extension
+    const originalExt = file.originalname.split('.').pop() || 
+                       (file.mimetype === 'application/pdf' ? 'pdf' : 'png');
+    const tempFilename = `temp-${timestamp}-${randomSuffix}.${originalExt}`;
     cb(null, tempFilename);
   }
 });
 
 const uploadExecutionEvidence = multer({ 
   storage: executionEvidenceStorage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    // Accept images, PDFs, and office documents (doc, docx, xlsx, xls)
+    const allowedMimes = [
+      'image/png', 
+      'image/jpeg', 
+      'image/jpg', 
+      'image/gif', 
+      'image/webp', 
+      'application/pdf',
+      'application/msword', // .doc
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+      'application/vnd.ms-excel', // .xls
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' // .xlsx
+    ];
+    
+    // Also check file extension as fallback (some browsers may not send correct mime type)
+    const fileExtension = file.originalname.toLowerCase().split('.').pop();
+    const allowedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx'];
+    
+    if (allowedMimes.includes(file.mimetype) || allowedExtensions.includes(fileExtension)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only images, PDFs, and office documents (doc, docx, xlsx, xls) are allowed.'), false);
+    }
+  }
 }).single('image');
 
 // POST create a new test execution
@@ -399,10 +427,25 @@ exports.getEvidenceAIDetails = async (req, res) => {
     }
 
     console.log('Original URL:', evidence_url);
-    const imageBase64 = await convertImageUrlToBase64(evidence_url);
-    console.log('Image converted to base64 successfully');
+    const fileBase64 = await convertImageUrlToBase64(evidence_url);
+    console.log('File converted to base64 successfully');
 
-    const extractedText = await extractTextFromImage(process.env.GEMINI_AI_KEY, imageBase64);
+    // Detect mime type from file extension
+    let mimeType = 'image/png'; // default
+    const fileExtension = evidence_url.toLowerCase().split('.').pop();
+    if (fileExtension === 'pdf') {
+      mimeType = 'application/pdf';
+    } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
+      mimeType = 'image/jpeg';
+    } else if (fileExtension === 'png') {
+      mimeType = 'image/png';
+    } else if (fileExtension === 'gif') {
+      mimeType = 'image/gif';
+    } else if (fileExtension === 'webp') {
+      mimeType = 'image/webp';
+    }
+
+    const extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
 
     const updateData = {
       extractedText: extractedText
@@ -730,7 +773,28 @@ exports.saveAnnotatedImage = (req, res) => {
       }
 
       if (!req.file) {
-        return res.status(400).json({ message: 'No image file provided.' });
+        return res.status(400).json({ message: 'No file provided.' });
+      }
+
+      // Detect file type from mimetype or extension
+      const fileMimeType = req.file.mimetype;
+      let fileExtension = req.file.originalname.toLowerCase().split('.').pop();
+      
+      // If extension not found, try to infer from mime type
+      if (!fileExtension) {
+        if (fileMimeType === 'application/pdf') {
+          fileExtension = 'pdf';
+        } else if (fileMimeType === 'application/msword') {
+          fileExtension = 'doc';
+        } else if (fileMimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+          fileExtension = 'docx';
+        } else if (fileMimeType === 'application/vnd.ms-excel') {
+          fileExtension = 'xls';
+        } else if (fileMimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+          fileExtension = 'xlsx';
+        } else {
+          fileExtension = 'png'; // default
+        }
       }
 
       if (!tenantId) {
@@ -764,9 +828,9 @@ exports.saveAnnotatedImage = (req, res) => {
         }
       }
 
-      // Rename the file with proper control_id
+      // Rename the file with proper control_id and correct extension
       const timestamp = Date.now();
-      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.png`;
+      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.${fileExtension}`;
       const finalPath = path.join(path.dirname(req.file.path), finalFilename);
       
       try {
@@ -841,7 +905,7 @@ exports.saveAnnotatedImage = (req, res) => {
       }
 
       res.json({ 
-        message: 'Annotated image saved successfully.',
+        message: fileExtension === 'pdf' ? 'Annotated PDF saved successfully.' : 'Annotated image saved successfully.',
         result_artifact_url: resultArtifactUrl
       });
 
@@ -852,14 +916,20 @@ exports.saveAnnotatedImage = (req, res) => {
           if (unlinkErr) console.error("Failed to delete temp file after error:", unlinkErr);
         });
       }
-      console.error('Error saving annotated image:', error);
-      res.status(500).json({ message: 'Server error during image save.' });
+      console.error('Error saving annotated file:', error);
+      res.status(500).json({ message: 'Server error during file save.' });
     }
   });
 };
 
-async function extractTextFromImage(apiKey, imageBase64) {
-  const prompt = `This image is a screenshot from MS active directory showing Policy settings, analyse the image and extract the settings into a JSON file`;
+async function extractTextFromEvidenceFile(apiKey, fileBase64, mimeType = 'image/png') {
+  // Adjust prompt based on file type
+  let prompt = '';
+  if (mimeType === 'application/pdf') {
+    prompt = `This is a PDF document containing policy settings or configuration information. Analyse the document and extract the settings into a JSON file. Extract all relevant policy settings, configurations, and important information from the PDF.`;
+  } else {
+    prompt = `This image is a screenshot from MS active directory showing Policy settings, analyse the image and extract the settings into a JSON file`;
+  }
 
   const requestBody = {
     contents: [{
@@ -867,8 +937,8 @@ async function extractTextFromImage(apiKey, imageBase64) {
         { text: prompt },
         {
           inline_data: {
-            mime_type: "image/png",
-            data: imageBase64
+            mime_type: mimeType,
+            data: fileBase64
           }
         }
       ]
