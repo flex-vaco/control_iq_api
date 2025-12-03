@@ -3,10 +3,15 @@ const fsSync = require('fs');
 const path = require('path');
 const multer = require('multer');
 const axios = require('axios');
+const libre = require('libreoffice-convert');
+const { promisify } = require('util');
 const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+
+// Promisify libreoffice convert
+const libreConvert = promisify(libre.convert);
 
 // Multer configuration for execution evidence images
 const executionEvidenceStorage = multer.diskStorage({
@@ -427,25 +432,39 @@ exports.getEvidenceAIDetails = async (req, res) => {
     }
 
     console.log('Original URL:', evidence_url);
-    const fileBase64 = await convertImageUrlToBase64(evidence_url);
-    console.log('File converted to base64 successfully');
-
-    // Detect mime type from file extension
-    let mimeType = 'image/png'; // default
+    
+    // Detect file type from file extension
     const fileExtension = evidence_url.toLowerCase().split('.').pop();
-    if (fileExtension === 'pdf') {
-      mimeType = 'application/pdf';
-    } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
-      mimeType = 'image/jpeg';
-    } else if (fileExtension === 'png') {
-      mimeType = 'image/png';
-    } else if (fileExtension === 'gif') {
-      mimeType = 'image/gif';
-    } else if (fileExtension === 'webp') {
-      mimeType = 'image/webp';
-    }
+    let mimeType = 'image/png'; // default
+    let fileBase64;
+    let extractedText;
 
-    const extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
+    // Check if it's an office document (doc, docx, xls, xlsx)
+    if (fileExtension === 'doc' || fileExtension === 'docx') {
+      // Convert Word document to PDF and extract text
+      extractedText = await extractTextFromWord(process.env.GEMINI_AI_KEY, evidence_url);
+    } else if (fileExtension === 'xls' || fileExtension === 'xlsx') {
+      // Convert Excel document to PDF and extract text
+      extractedText = await extractTextFromExcelWithImages(process.env.GEMINI_AI_KEY, evidence_url);
+    } else {
+      // For PDFs and images, use existing method
+      fileBase64 = await convertImageUrlToBase64(evidence_url);
+      console.log('File converted to base64 successfully');
+
+      if (fileExtension === 'pdf') {
+        mimeType = 'application/pdf';
+      } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
+        mimeType = 'image/jpeg';
+      } else if (fileExtension === 'png') {
+        mimeType = 'image/png';
+      } else if (fileExtension === 'gif') {
+        mimeType = 'image/gif';
+      } else if (fileExtension === 'webp') {
+        mimeType = 'image/webp';
+      }
+
+      extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
+    }
 
     const updateData = {
       extractedText: extractedText
@@ -1104,6 +1123,171 @@ async function convertImageUrlToBase64(imageUrl) {
     return base64;
   } catch (error) {
     throw new Error(`Error converting image to base64: ${error.message}`);
+  }
+}
+
+/**
+ * Convert office document (doc, docx, xls, xlsx) to PDF using libreoffice-convert
+ * @param {string} filePath - Path to the office document
+ * @returns {Promise<Buffer>} - PDF buffer
+ */
+async function convertOfficeToPdf(filePath) {
+  try {
+    const fileBuffer = await fs.readFile(filePath);
+    const pdfBuffer = await libreConvert(fileBuffer, '.pdf', undefined);
+    return pdfBuffer;
+  } catch (error) {
+    console.error('Error converting office document to PDF:', error);
+    throw new Error(`Failed to convert office document to PDF: ${error.message}`);
+  }
+}
+
+/**
+ * Extract text from Word document (doc, docx) by converting to PDF first
+ * @param {string} apiKey - Gemini API key
+ * @param {string} wordPath - Path to the Word document (relative to uploads folder)
+ * @returns {Promise<string>} - Extracted text as JSON string
+ */
+async function extractTextFromWord(apiKey, wordPath) {
+  try {
+    // Construct full file path
+    const fullPath = path.join(__dirname, '..', 'uploads', wordPath);
+    
+    // Check if file exists
+    try {
+      await fs.access(fullPath);
+    } catch (accessError) {
+      throw new Error(`Word document not found at path: ${fullPath}`);
+    }
+
+    // Convert Word document to PDF
+    console.log('Converting Word document to PDF:', fullPath);
+    const pdfBuffer = await convertOfficeToPdf(fullPath);
+    console.log('Word document converted to PDF successfully');
+
+    // Convert PDF buffer to base64
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // Extract text from PDF using Gemini AI
+    const prompt = `This is a PDF document converted from a Word document containing policy settings or configuration information. Analyse the document and extract the settings into a JSON file. Extract all relevant policy settings, configurations, and important information from the document.`;
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: 'application/pdf',
+              data: pdfBase64
+            }
+          }
+        ]
+      }]
+    };
+
+    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+    console.log('Calling Gemini API for Word document...');
+
+    const response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = response.data;
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult);
+    return result;
+  } catch (error) {
+    console.error('Error extracting text from Word document:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extract text from Excel document (xls, xlsx) by converting to PDF first
+ * @param {string} apiKey - Gemini API key
+ * @param {string} excelPath - Path to the Excel document (relative to uploads folder)
+ * @returns {Promise<string>} - Extracted text as JSON string
+ */
+async function extractTextFromExcelWithImages(apiKey, excelPath) {
+  try {
+    // Construct full file path
+    const fullPath = path.join(__dirname, '..', 'uploads', excelPath);
+    
+    // Check if file exists
+    try {
+      await fs.access(fullPath);
+    } catch (accessError) {
+      throw new Error(`Excel document not found at path: ${fullPath}`);
+    }
+
+    // Convert Excel document to PDF
+    console.log('Converting Excel document to PDF:', fullPath);
+    const pdfBuffer = await convertOfficeToPdf(fullPath);
+    console.log('Excel document converted to PDF successfully');
+
+    // Convert PDF buffer to base64
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // Extract text from PDF using Gemini AI
+    const prompt = `This is a PDF document converted from an Excel spreadsheet containing policy settings, configuration information, or data tables. Analyse the document and extract all relevant information including:
+- Policy settings and configurations
+- Data tables and their values
+- Any important information from cells
+- Headers and labels
+Extract everything into a structured JSON file.`;
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: 'application/pdf',
+              data: pdfBase64
+            }
+          }
+        ]
+      }]
+    };
+
+    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+    console.log('Calling Gemini API for Excel document...');
+
+    const response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = response.data;
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult);
+    return result;
+  } catch (error) {
+    console.error('Error extracting text from Excel document:', error);
+    throw error;
   }
 }
 
