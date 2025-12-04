@@ -4,6 +4,7 @@ const db = require('../config/db');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { extractEvidenceAIDetails } = require('./test_executions.controller');
 
 // --- Multer Configuration for MULTIPLE Document Upload ---
 const storage = multer.diskStorage({
@@ -215,6 +216,36 @@ exports.createEvidence = (req, res) => {
       // 3. Execute Transaction
       const result = await PBC.createEvidenceAndDocuments(evidenceData, documentsData);
       
+      // 4. Extract AI details for policy documents (async, don't wait for completion)
+      if (documentsData && documentsData.length > 0) {
+        // Query to get the inserted document IDs for policy documents
+        const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+        if (policyDocuments.length > 0) {
+          // Get document IDs from database
+          const [insertedDocs] = await db.query(
+            `SELECT document_id, artifact_url FROM evidence_documents 
+             WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+             ORDER BY document_id DESC LIMIT ?`,
+            [result.evidenceId, tenantId, policyDocuments.length]
+          );
+          
+          // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+          const policyDocumentPromises = insertedDocs.map(async (doc) => {
+            try {
+              const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+              await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+            } catch (error) {
+              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              // Don't throw - continue with other documents
+            }
+          });
+          // Process in background, don't block response
+          Promise.all(policyDocumentPromises).catch(err => {
+            console.error('Error processing policy document AI extraction:', err);
+          });
+        }
+      }
+      
       res.status(201).json({ 
         message: 'Evidence request created successfully.', 
         evidenceId: result.evidenceId 
@@ -308,8 +339,36 @@ exports.updateEvidence = (req, res) => {
             `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by) VALUES ${placeholders}`,
             docValues
           );
+          
         } finally {
           connection.release();
+        }
+        
+        // Extract AI details for policy documents (async, don't wait for completion)
+        const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+        if (policyDocuments.length > 0) {
+          // Get document IDs from database
+          const [insertedDocs] = await db.query(
+            `SELECT document_id, artifact_url FROM evidence_documents 
+             WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+             ORDER BY document_id DESC LIMIT ?`,
+            [evidenceId, tenantId, policyDocuments.length]
+          );
+          
+          // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+          const policyDocumentPromises = insertedDocs.map(async (doc) => {
+            try {
+              const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+              await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+            } catch (error) {
+              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              // Don't throw - continue with other documents
+            }
+          });
+          // Process in background, don't block response
+          Promise.all(policyDocumentPromises).catch(err => {
+            console.error('Error processing policy document AI extraction:', err);
+          });
         }
       }
 
@@ -477,6 +536,33 @@ exports.addEvidenceDocuments = (req, res) => {
             docValues
           );
           await connection.commit();
+          
+          // Extract AI details for policy documents (async, don't wait for completion)
+          const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+          if (policyDocuments.length > 0) {
+            // Get document IDs from database
+            const [insertedDocs] = await db.query(
+              `SELECT document_id, artifact_url FROM evidence_documents 
+               WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+               ORDER BY document_id DESC LIMIT ?`,
+              [evidenceId, tenantId, policyDocuments.length]
+            );
+            
+            // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+            const policyDocumentPromises = insertedDocs.map(async (doc) => {
+              try {
+                const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+                await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+              } catch (error) {
+                console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+                // Don't throw - continue with other documents
+              }
+            });
+            // Process in background, don't block response
+            Promise.all(policyDocumentPromises).catch(err => {
+              console.error('Error processing policy document AI extraction:', err);
+            });
+          }
         } catch (dbError) {
           await connection.rollback();
           // Clean up uploaded files on DB error

@@ -412,6 +412,62 @@ exports.getTestExecutionById = async (req, res) => {
   }
 };
 
+// Helper function to extract AI details from evidence document (reusable)
+async function extractEvidenceAIDetails(evidence_document_id, evidence_url, tenantId, userId) {
+  if (!evidence_document_id || !evidence_url || !tenantId || !userId) {
+    throw new Error('Missing required parameters for AI extraction');
+  }
+
+  console.log('Extracting AI details for document:', evidence_document_id, 'URL:', evidence_url);
+  
+  // Detect file type from file extension (handle paths like "evidences/filename.docx")
+  const urlLower = evidence_url.toLowerCase();
+  const lastDotIndex = urlLower.lastIndexOf('.');
+  const fileExtension = lastDotIndex !== -1 ? urlLower.substring(lastDotIndex + 1) : '';
+  
+  console.log('Detected file extension:', fileExtension);
+  
+  let mimeType = 'image/png'; // default
+  let fileBase64;
+  let extractedText;
+
+  // Check if it's an office document (doc, docx, xls, xlsx)
+  if (fileExtension === 'doc' || fileExtension === 'docx') {
+    console.log('Processing Word document (doc/docx)');
+    // Convert Word document to PDF and extract text
+    extractedText = await extractTextFromWord(process.env.GEMINI_AI_KEY, evidence_url);
+  } else if (fileExtension === 'xls' || fileExtension === 'xlsx') {
+    console.log('Processing Excel document (xls/xlsx)');
+    // Convert Excel document to PDF and extract text
+    extractedText = await extractTextFromExcelWithImages(process.env.GEMINI_AI_KEY, evidence_url);
+  } else {
+    // For PDFs and images, use existing method
+    fileBase64 = await convertImageUrlToBase64(evidence_url);
+    console.log('File converted to base64 successfully');
+
+    if (fileExtension === 'pdf') {
+      mimeType = 'application/pdf';
+    } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
+      mimeType = 'image/jpeg';
+    } else if (fileExtension === 'png') {
+      mimeType = 'image/png';
+    } else if (fileExtension === 'gif') {
+      mimeType = 'image/gif';
+    } else if (fileExtension === 'webp') {
+      mimeType = 'image/webp';
+    }
+
+    extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
+  }
+
+  const updateData = {
+    extractedText: extractedText
+  };
+  await PBC.updateEvidenceAIDetails(evidence_document_id, updateData, tenantId, userId);
+
+  return extractedText;
+}
+
 // POST get evidence AI details by document ID
 exports.getEvidenceAIDetails = async (req, res) => {
   try {
@@ -431,45 +487,7 @@ exports.getEvidenceAIDetails = async (req, res) => {
       return res.status(400).json({ message: 'Evidence URL is required.' });
     }
 
-    console.log('Original URL:', evidence_url);
-    
-    // Detect file type from file extension
-    const fileExtension = evidence_url.toLowerCase().split('.').pop();
-    let mimeType = 'image/png'; // default
-    let fileBase64;
-    let extractedText;
-
-    // Check if it's an office document (doc, docx, xls, xlsx)
-    if (fileExtension === 'doc' || fileExtension === 'docx') {
-      // Convert Word document to PDF and extract text
-      extractedText = await extractTextFromWord(process.env.GEMINI_AI_KEY, evidence_url);
-    } else if (fileExtension === 'xls' || fileExtension === 'xlsx') {
-      // Convert Excel document to PDF and extract text
-      extractedText = await extractTextFromExcelWithImages(process.env.GEMINI_AI_KEY, evidence_url);
-    } else {
-      // For PDFs and images, use existing method
-      fileBase64 = await convertImageUrlToBase64(evidence_url);
-      console.log('File converted to base64 successfully');
-
-      if (fileExtension === 'pdf') {
-        mimeType = 'application/pdf';
-      } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
-        mimeType = 'image/jpeg';
-      } else if (fileExtension === 'png') {
-        mimeType = 'image/png';
-      } else if (fileExtension === 'gif') {
-        mimeType = 'image/gif';
-      } else if (fileExtension === 'webp') {
-        mimeType = 'image/webp';
-      }
-
-      extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
-    }
-
-    const updateData = {
-      extractedText: extractedText
-    };
-    await PBC.updateEvidenceAIDetails(evidence_document_id, updateData, tenantId, userId);
+    const extractedText = await extractEvidenceAIDetails(evidence_document_id, evidence_url, tenantId, userId);
 
     res.json({
       message: 'Evidence AI details fetched successfully.',
@@ -485,6 +503,9 @@ exports.getEvidenceAIDetails = async (req, res) => {
     });
   }
 };
+
+// Export the helper function for use in other controllers
+exports.extractEvidenceAIDetails = extractEvidenceAIDetails;
 
 // POST compare attributes
 exports.compareAttributes = async (req, res) => {
@@ -769,6 +790,12 @@ exports.getTestExecutionEvidenceDocuments = async (req, res) => {
 
 // POST save annotated image and update result_artifact_url
 exports.saveAnnotatedImage = (req, res) => {
+  // Set CORS headers explicitly for file upload responses
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  
   uploadExecutionEvidence(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ message: 'File upload error: ' + err.message });
@@ -923,6 +950,9 @@ exports.saveAnnotatedImage = (req, res) => {
         return res.status(404).json({ message: 'Failed to update result artifact URL.' });
       }
 
+      // Ensure CORS headers are set in success response
+      res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.header('Access-Control-Allow-Credentials', 'true');
       res.json({ 
         message: fileExtension === 'pdf' ? 'Annotated PDF saved successfully.' : 'Annotated image saved successfully.',
         result_artifact_url: resultArtifactUrl
@@ -936,6 +966,9 @@ exports.saveAnnotatedImage = (req, res) => {
         });
       }
       console.error('Error saving annotated file:', error);
+      // Ensure CORS headers are set in error response
+      res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.header('Access-Control-Allow-Credentials', 'true');
       res.status(500).json({ message: 'Server error during file save.' });
     }
   });
