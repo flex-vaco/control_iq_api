@@ -35,13 +35,28 @@ const TestExecution = {
     return rows.length > 0 ? { evidence_id: rows[0].evidence_id, testing_status: rows[0].testing_status } : null;
   },
 
-  // Get evidence documents by evidence_id with evidence_name
+  // Get evidence documents by evidence_id with evidence_name (excludes policy documents)
   getEvidenceDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name
+      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document
        FROM evidence_documents ed
        JOIN evidences e ON ed.evidence_id = e.evidence_id
        WHERE ed.evidence_id = ? AND ed.tenant_id = ? AND ed.deleted_at IS NULL
+         AND (ed.is_policy_document = 0 OR ed.is_policy_document IS NULL)
+       ORDER BY ed.created_date DESC`,
+      [evidenceId, tenantId]
+    );
+    return rows;
+  },
+
+  // Get only policy documents by evidence_id
+  getPolicyDocuments: async (evidenceId, tenantId) => {
+    const [rows] = await db.query(
+      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document
+       FROM evidence_documents ed
+       JOIN evidences e ON ed.evidence_id = e.evidence_id
+       WHERE ed.evidence_id = ? AND ed.tenant_id = ? AND ed.deleted_at IS NULL
+         AND ed.is_policy_document = 1
        ORDER BY ed.created_date DESC`,
       [evidenceId, tenantId]
     );
@@ -88,24 +103,31 @@ const TestExecution = {
   },
 
   // Find all test executions for a client (or all if clientId is null)
-  findAllByClient: async (clientId, tenantId) => {
+  // tenantId can be null for super admin to see all data
+  findAllByClient: async (clientId, tenantId = null) => {
     let query = `
       SELECT te.*, r.control_id, r.control_description, r.process, c.client_name, 
-      CONCAT_WS(' ', u.first_name, u.last_name) AS user_name
+      CONCAT_WS(' ', u.first_name, u.last_name) AS user_name, t.tenant_name
       FROM test_executions te
       JOIN rcm r ON te.rcm_id = r.rcm_id
       JOIN clients c ON te.client_id = c.client_id
       LEFT JOIN users u ON te.user_id = u.user_id
-      WHERE te.tenant_id = ? AND te.deleted_at IS NULL
+      LEFT JOIN tenants t ON te.tenant_id = t.tenant_id
+      WHERE te.deleted_at IS NULL
     `;
-    const params = [tenantId];
+    const params = [];
+    
+    if (tenantId !== null) {
+      query += ' AND te.tenant_id = ?';
+      params.push(tenantId);
+    }
     
     if (clientId) {
       query += ' AND te.client_id = ?';
       params.push(clientId);
     }
     
-    query += ' ORDER BY te.created_at DESC';
+    query += ' ORDER BY t.tenant_name, te.created_at DESC';
     
     const [rows] = await db.query(query, params);
     return rows;
@@ -126,6 +148,17 @@ const TestExecution = {
     
     const [rows] = await db.query(query, params);
     return rows.length > 0 ? rows[0] : null;
+  },
+
+  // Update test execution status and result
+  updateStatusAndResult: async (testExecutionId, status, result, tenantId, userId) => {
+    const [result_query] = await db.query(
+      `UPDATE test_executions 
+       SET status = ?, result = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [status, result, userId, testExecutionId, tenantId]
+    );
+    return result_query.affectedRows > 0;
   }
 };
 

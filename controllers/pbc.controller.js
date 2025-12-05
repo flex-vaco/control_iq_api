@@ -4,6 +4,7 @@ const db = require('../config/db');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { extractEvidenceAIDetails } = require('./test_executions.controller');
 
 // --- Multer Configuration for MULTIPLE Document Upload ---
 const storage = multer.diskStorage({
@@ -107,10 +108,10 @@ exports.checkDuplicatePbc = async (req, res) => {
 exports.getAllEvidence = async (req, res) => {
   try {
     const clientId = req.query.client_id || null;
-    const tenantId = req.user.tenantId;
-    if (!tenantId) {
-      return res.status(400).json({ message: 'Tenant ID is required.' });
-    }
+    const requestedTenantId = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+    const { isSuperAdmin } = require('../utils/auth.helper');
+    // Super admin can see all data or filter by tenant, regular users see only their tenant
+    const tenantId = isSuperAdmin(req.user) ? requestedTenantId : req.user.tenantId;
     // Use findAll to get data with client_name (supports both filtered and unfiltered)
     const data = await PBC.findAll(tenantId, clientId);
     res.json(data);
@@ -192,18 +193,58 @@ exports.createEvidence = (req, res) => {
         created_by: userId,
       };
 
-      const documentsData = req.files ? req.files.map(file => {
+      // Parse is_policy_document array from request body
+      const isPolicyDocumentArray = req.body.is_policy_document 
+        ? (Array.isArray(req.body.is_policy_document) 
+            ? req.body.is_policy_document 
+            : [req.body.is_policy_document])
+        : [];
+      
+      const documentsData = req.files ? req.files.map((file, index) => {
         // Extract original filename without extension
         const originalName = file.originalname || '';
         const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+        // Get is_policy_document flag for this file (default to false)
+        const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
         return {
           artifact_url: `evidences/${file.filename}`, // Relative path for storage
-          document_name: nameWithoutExt || null
+          document_name: nameWithoutExt || null,
+          is_policy_document: isPolicyDocument
         };
       }) : [];
 
       // 3. Execute Transaction
       const result = await PBC.createEvidenceAndDocuments(evidenceData, documentsData);
+      
+      // 4. Extract AI details for policy documents (async, don't wait for completion)
+      if (documentsData && documentsData.length > 0) {
+        // Query to get the inserted document IDs for policy documents
+        const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+        if (policyDocuments.length > 0) {
+          // Get document IDs from database
+          const [insertedDocs] = await db.query(
+            `SELECT document_id, artifact_url FROM evidence_documents 
+             WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+             ORDER BY document_id DESC LIMIT ?`,
+            [result.evidenceId, tenantId, policyDocuments.length]
+          );
+          
+          // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+          const policyDocumentPromises = insertedDocs.map(async (doc) => {
+            try {
+              const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+              await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+            } catch (error) {
+              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              // Don't throw - continue with other documents
+            }
+          });
+          // Process in background, don't block response
+          Promise.all(policyDocumentPromises).catch(err => {
+            console.error('Error processing policy document AI extraction:', err);
+          });
+        }
+      }
       
       res.status(201).json({ 
         message: 'Evidence request created successfully.', 
@@ -262,13 +303,23 @@ exports.updateEvidence = (req, res) => {
 
       // Handle file uploads if any (similar to create)
       if (req.files && req.files.length > 0) {
-        const documentsData = req.files.map(file => {
+        // Parse is_policy_document array from request body
+        const isPolicyDocumentArray = req.body.is_policy_document 
+          ? (Array.isArray(req.body.is_policy_document) 
+              ? req.body.is_policy_document 
+              : [req.body.is_policy_document])
+          : [];
+        
+        const documentsData = req.files.map((file, index) => {
           // Extract original filename without extension
           const originalName = file.originalname || '';
           const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+          // Get is_policy_document flag for this file (default to false)
+          const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
           return {
             artifact_url: `evidences/${file.filename}`,
-            document_name: nameWithoutExt || null
+            document_name: nameWithoutExt || null,
+            is_policy_document: isPolicyDocument
           };
         });
         // Add documents to existing evidence
@@ -280,15 +331,44 @@ exports.updateEvidence = (req, res) => {
             client_id,
             doc.document_name,
             doc.artifact_url,
+            doc.is_policy_document ? 1 : 0,
             userId
           ]).flat();
-          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
           await connection.query(
-            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by) VALUES ${placeholders}`,
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by) VALUES ${placeholders}`,
             docValues
           );
+          
         } finally {
           connection.release();
+        }
+        
+        // Extract AI details for policy documents (async, don't wait for completion)
+        const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+        if (policyDocuments.length > 0) {
+          // Get document IDs from database
+          const [insertedDocs] = await db.query(
+            `SELECT document_id, artifact_url FROM evidence_documents 
+             WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+             ORDER BY document_id DESC LIMIT ?`,
+            [evidenceId, tenantId, policyDocuments.length]
+          );
+          
+          // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+          const policyDocumentPromises = insertedDocs.map(async (doc) => {
+            try {
+              const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+              await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+            } catch (error) {
+              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              // Don't throw - continue with other documents
+            }
+          });
+          // Process in background, don't block response
+          Promise.all(policyDocumentPromises).catch(err => {
+            console.error('Error processing policy document AI extraction:', err);
+          });
         }
       }
 
@@ -324,7 +404,7 @@ exports.deleteEvidence = async (req, res) => {
   }
 };
 
-// GET evidence documents by evidence_id
+// GET evidence documents by evidence_id (excludes policy documents)
 exports.getEvidenceDocuments = async (req, res) => {
   try {
     const evidenceId = req.params.id;
@@ -338,10 +418,32 @@ exports.getEvidenceDocuments = async (req, res) => {
       return res.status(400).json({ message: 'Tenant ID is required.' });
     }
 
-    const documents = await PBC.getEvidenceDocuments(evidenceId, tenantId);
+    const documents = await PBC.getEvidenceDocuments(evidenceId, tenantId, false);
     res.json(documents);
   } catch (error) {
     console.error('Error fetching evidence documents:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// GET policy documents by evidence_id
+exports.getPolicyDocuments = async (req, res) => {
+  try {
+    const evidenceId = req.params.id;
+    const tenantId = req.user.tenantId;
+
+    if (!evidenceId) {
+      return res.status(400).json({ message: 'Evidence ID is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const documents = await PBC.getPolicyDocuments(evidenceId, tenantId);
+    res.json(documents);
+  } catch (error) {
+    console.error('Error fetching policy documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -396,13 +498,22 @@ exports.addEvidenceDocuments = (req, res) => {
 
       // Handle file uploads if any
       if (req.files && req.files.length > 0) {
-        const documentsData = req.files.map(file => {
+        // Parse is_policy_document array from request body
+        const isPolicyDocumentArray = req.body.is_policy_document 
+          ? (Array.isArray(req.body.is_policy_document) 
+              ? req.body.is_policy_document 
+              : [req.body.is_policy_document])
+          : [];
+        const documentsData = req.files.map((file, index) => {
           // Extract original filename without extension
           const originalName = file.originalname || '';
           const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+          // Get is_policy_document flag for this file (default to false)
+          const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
           return {
             artifact_url: `evidences/${file.filename}`,
-            document_name: nameWithoutExt || null
+            document_name: nameWithoutExt || null,
+            is_policy_document: isPolicyDocument
           };
         });
         
@@ -416,14 +527,42 @@ exports.addEvidenceDocuments = (req, res) => {
             evidence.client_id,
             doc.document_name,
             doc.artifact_url,
+            doc.is_policy_document ? 1 : 0,
             userId
           ]).flat();
-          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
           await connection.query(
-            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by) VALUES ${placeholders}`,
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by) VALUES ${placeholders}`,
             docValues
           );
           await connection.commit();
+          
+          // Extract AI details for policy documents (async, don't wait for completion)
+          const policyDocuments = documentsData.filter(doc => doc.is_policy_document);
+          if (policyDocuments.length > 0) {
+            // Get document IDs from database
+            const [insertedDocs] = await db.query(
+              `SELECT document_id, artifact_url FROM evidence_documents 
+               WHERE evidence_id = ? AND tenant_id = ? AND is_policy_document = 1 
+               ORDER BY document_id DESC LIMIT ?`,
+              [evidenceId, tenantId, policyDocuments.length]
+            );
+            
+            // Process AI extraction for each policy document (supports doc, docx, xls, xlsx, pdf, images)
+            const policyDocumentPromises = insertedDocs.map(async (doc) => {
+              try {
+                const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
+                await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+              } catch (error) {
+                console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+                // Don't throw - continue with other documents
+              }
+            });
+            // Process in background, don't block response
+            Promise.all(policyDocumentPromises).catch(err => {
+              console.error('Error processing policy document AI extraction:', err);
+            });
+          }
         } catch (dbError) {
           await connection.rollback();
           // Clean up uploaded files on DB error

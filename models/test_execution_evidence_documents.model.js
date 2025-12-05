@@ -49,6 +49,25 @@ const TestExecutionEvidenceDocuments = {
       [testExecutionId, tenantId]
     );
     return rows;
+  },
+
+  // Update result JSON with manual changes to attribute_final_result and manual_final_result
+  // Also updates status field based on manual_final_result
+  updateResult: async (testExecutionId, evidenceDocumentId, updatedResult, tenantId, userId) => {
+    // Extract manual_final_result to update status field
+    // status: 1 = Pass (true), 0 = Fail (false)
+    const manualFinalResult = updatedResult.manual_final_result !== undefined 
+      ? updatedResult.manual_final_result 
+      : (updatedResult.final_result !== undefined ? updatedResult.final_result : false);
+    const statusValue = manualFinalResult ? 1 : 0;
+
+    const [result] = await db.query(
+      `UPDATE test_execution_evidence_documents 
+       SET result = ?, status = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND evidence_document_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [JSON.stringify(updatedResult), statusValue, userId, testExecutionId, evidenceDocumentId, tenantId]
+    );
+    return result.affectedRows > 0;
   }
 };
 

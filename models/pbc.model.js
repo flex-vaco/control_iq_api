@@ -19,27 +19,38 @@ const PBC = {
   },
 
   // Fetches all PBC/evidence requests for a tenant (optionally filtered by client_id) with client_name
-  findAll: async (tenantId, clientId = null) => {
+  // tenantId can be null for super admin to see all data
+  findAll: async (tenantId = null, clientId = null) => {
     let query = `
       SELECT 
         e.*, 
         r.control_id,
         r.control_description,
         c.client_name,
-        (SELECT COUNT(*) FROM evidence_documents d WHERE d.evidence_id = e.evidence_id AND d.deleted_at IS NULL) AS document_count
+        t.tenant_name,
+        (SELECT COUNT(*) FROM evidence_documents d 
+         WHERE d.evidence_id = e.evidence_id 
+         AND d.deleted_at IS NULL 
+         AND (d.is_policy_document = 0 OR d.is_policy_document IS NULL)) AS document_count
       FROM evidences e
       JOIN rcm r ON e.rcm_id = r.rcm_id
       JOIN clients c ON e.client_id = c.client_id
-      WHERE e.tenant_id = ? AND e.deleted_at IS NULL
+      LEFT JOIN tenants t ON e.tenant_id = t.tenant_id
+      WHERE e.deleted_at IS NULL
     `;
-    const params = [tenantId];
+    const params = [];
+    
+    if (tenantId !== null) {
+      query += ' AND e.tenant_id = ?';
+      params.push(tenantId);
+    }
     
     if (clientId) {
       query += ' AND e.client_id = ?';
       params.push(clientId);
     }
     
-    query += ' ORDER BY e.created_at DESC';
+    query += ' ORDER BY t.tenant_name, e.created_at DESC';
     
     const [rows] = await db.query(query, params);
     return rows;
@@ -78,14 +89,15 @@ const PBC = {
           evidenceData.client_id,
           doc.document_name || null,
           doc.artifact_url,
+          doc.is_policy_document ? 1 : 0,
           evidenceData.created_by
         ]).flat();
 
-        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
         
         await connection.query(
           `INSERT INTO evidence_documents 
-            (evidence_id, tenant_id, client_id, document_name, artifact_url, created_by)
+            (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by)
            VALUES ${placeholders}`,
           docValues
         );
@@ -137,7 +149,10 @@ const PBC = {
   findById: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
       `SELECT e.*, r.control_id, r.control_description, c.client_name,
-              (SELECT COUNT(*) FROM evidence_documents d WHERE d.evidence_id = e.evidence_id AND d.deleted_at IS NULL) AS document_count
+              (SELECT COUNT(*) FROM evidence_documents d 
+               WHERE d.evidence_id = e.evidence_id 
+               AND d.deleted_at IS NULL 
+               AND (d.is_policy_document = 0 OR d.is_policy_document IS NULL)) AS document_count
        FROM evidences e
        JOIN rcm r ON e.rcm_id = r.rcm_id
        JOIN clients c ON e.client_id = c.client_id
@@ -188,12 +203,31 @@ const PBC = {
     return rows.length > 0 ? rows[0] : null;
   },
 
-  // Get evidence documents by evidence_id
-  getEvidenceDocuments: async (evidenceId, tenantId) => {
+  // Get evidence documents by evidence_id (excludes policy documents by default)
+  getEvidenceDocuments: async (evidenceId, tenantId, includePolicy = false) => {
+    let query = `
+      SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document
+      FROM evidence_documents
+      WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL
+    `;
+    
+    if (!includePolicy) {
+      query += ' AND (is_policy_document = 0 OR is_policy_document IS NULL)';
+    }
+    
+    query += ' ORDER BY created_date DESC, created_at DESC';
+    
+    const [rows] = await db.query(query, [evidenceId, tenantId]);
+    return rows;
+  },
+
+  // Get only policy documents by evidence_id
+  getPolicyDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT document_id, artifact_url, document_name, created_date, created_at
+      `SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document
        FROM evidence_documents
-       WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL
+       WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL 
+         AND is_policy_document = 1
        ORDER BY created_date DESC, created_at DESC`,
       [evidenceId, tenantId]
     );

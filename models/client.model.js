@@ -1,14 +1,24 @@
 const db = require('../config/db');
 
 const Client = {
-  // Find all clients for a specific tenant
-  findAllByTenant: async (tenantId) => {
-    const [rows] = await db.query(
-      `SELECT * FROM clients 
-       WHERE tenant_id = ? AND deleted_at IS NULL
-       ORDER BY client_name ASC`,
-      [tenantId]
-    );
+  // Find all clients for a specific tenant (tenantId can be null for super admin)
+  findAllByTenant: async (tenantId = null) => {
+    let query = `
+      SELECT c.*, t.tenant_name
+      FROM clients c
+      LEFT JOIN tenants t ON c.tenant_id = t.tenant_id
+      WHERE c.deleted_at IS NULL
+    `;
+    const params = [];
+    
+    if (tenantId !== null) {
+      query += ' AND c.tenant_id = ?';
+      params.push(tenantId);
+    }
+    
+    query += ' ORDER BY t.tenant_name, c.client_name ASC';
+    
+    const [rows] = await db.query(query, params);
     return rows;
   },
 

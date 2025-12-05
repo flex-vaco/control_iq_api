@@ -3,10 +3,15 @@ const fsSync = require('fs');
 const path = require('path');
 const multer = require('multer');
 const axios = require('axios');
+const libre = require('libreoffice-convert');
+const { promisify } = require('util');
 const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+
+// Promisify libreoffice convert
+const libreConvert = promisify(libre.convert);
 
 // Multer configuration for execution evidence images
 const executionEvidenceStorage = multer.diskStorage({
@@ -19,14 +24,42 @@ const executionEvidenceStorage = multer.diskStorage({
     // Generate temporary filename - we'll rename it after we get control_id from body
     const timestamp = Date.now();
     const randomSuffix = Math.round(Math.random() * 1E9);
-    const tempFilename = `temp-${timestamp}-${randomSuffix}.png`;
+    // Preserve original file extension
+    const originalExt = file.originalname.split('.').pop() || 
+                       (file.mimetype === 'application/pdf' ? 'pdf' : 'png');
+    const tempFilename = `temp-${timestamp}-${randomSuffix}.${originalExt}`;
     cb(null, tempFilename);
   }
 });
 
 const uploadExecutionEvidence = multer({ 
   storage: executionEvidenceStorage,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    // Accept images, PDFs, and office documents (doc, docx, xlsx, xls)
+    const allowedMimes = [
+      'image/png', 
+      'image/jpeg', 
+      'image/jpg', 
+      'image/gif', 
+      'image/webp', 
+      'application/pdf',
+      'application/msword', // .doc
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+      'application/vnd.ms-excel', // .xls
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' // .xlsx
+    ];
+    
+    // Also check file extension as fallback (some browsers may not send correct mime type)
+    const fileExtension = file.originalname.toLowerCase().split('.').pop();
+    const allowedExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx'];
+    
+    if (allowedMimes.includes(file.mimetype) || allowedExtensions.includes(fileExtension)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only images, PDFs, and office documents (doc, docx, xlsx, xls) are allowed.'), false);
+    }
+  }
 }).single('image');
 
 // POST create a new test execution
@@ -277,11 +310,10 @@ exports.getEvidenceDataForTesting = async (req, res) => {
 exports.getAllTestExecutions = async (req, res) => {
   try {
     const clientId = req.query.client_id || null;
-    const tenantId = req.user.tenantId;
-
-    if (!tenantId) {
-      return res.status(400).json({ message: 'Tenant ID is required.' });
-    }
+    const requestedTenantId = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+    const { isSuperAdmin } = require('../utils/auth.helper');
+    // Super admin can see all data or filter by tenant, regular users see only their tenant
+    const tenantId = isSuperAdmin(req.user) ? requestedTenantId : req.user.tenantId;
 
     const data = await TestExecution.findAllByClient(clientId, tenantId);
     res.json(data);
@@ -347,9 +379,14 @@ exports.getTestExecutionById = async (req, res) => {
     // Get RCM details including classification
     const rcmDetails = await RCM.findById(testExecution.rcm_id, tenantId);
     
-    // Get evidence documents
+    // Get evidence documents (excludes policy documents)
     const evidenceDocuments = testExecution.pcb_id 
       ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
+      : [];
+    
+    // Get policy documents
+    const policyDocuments = testExecution.pcb_id 
+      ? await TestExecution.getPolicyDocuments(testExecution.pcb_id, tenantId)
       : [];
     
     const evidenceDetails = await PBC.findById(testExecution.pcb_id, tenantId);
@@ -364,6 +401,7 @@ exports.getTestExecutionById = async (req, res) => {
       test_execution: testExecution,
       rcm_details: rcmDetails,
       evidence_documents: evidenceDocuments,
+      policy_documents: policyDocuments,
       test_attributes: testAttributes,
       evidence_details: evidenceDetails
     });
@@ -373,6 +411,62 @@ exports.getTestExecutionById = async (req, res) => {
     res.status(500).json({ message: 'Server error.' });
   }
 };
+
+// Helper function to extract AI details from evidence document (reusable)
+async function extractEvidenceAIDetails(evidence_document_id, evidence_url, tenantId, userId) {
+  if (!evidence_document_id || !evidence_url || !tenantId || !userId) {
+    throw new Error('Missing required parameters for AI extraction');
+  }
+
+  console.log('Extracting AI details for document:', evidence_document_id, 'URL:', evidence_url);
+  
+  // Detect file type from file extension (handle paths like "evidences/filename.docx")
+  const urlLower = evidence_url.toLowerCase();
+  const lastDotIndex = urlLower.lastIndexOf('.');
+  const fileExtension = lastDotIndex !== -1 ? urlLower.substring(lastDotIndex + 1) : '';
+  
+  console.log('Detected file extension:', fileExtension);
+  
+  let mimeType = 'image/png'; // default
+  let fileBase64;
+  let extractedText;
+
+  // Check if it's an office document (doc, docx, xls, xlsx)
+  if (fileExtension === 'doc' || fileExtension === 'docx') {
+    console.log('Processing Word document (doc/docx)');
+    // Convert Word document to PDF and extract text
+    extractedText = await extractTextFromWord(process.env.GEMINI_AI_KEY, evidence_url);
+  } else if (fileExtension === 'xls' || fileExtension === 'xlsx') {
+    console.log('Processing Excel document (xls/xlsx)');
+    // Convert Excel document to PDF and extract text
+    extractedText = await extractTextFromExcelWithImages(process.env.GEMINI_AI_KEY, evidence_url);
+  } else {
+    // For PDFs and images, use existing method
+    fileBase64 = await convertImageUrlToBase64(evidence_url);
+    console.log('File converted to base64 successfully');
+
+    if (fileExtension === 'pdf') {
+      mimeType = 'application/pdf';
+    } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
+      mimeType = 'image/jpeg';
+    } else if (fileExtension === 'png') {
+      mimeType = 'image/png';
+    } else if (fileExtension === 'gif') {
+      mimeType = 'image/gif';
+    } else if (fileExtension === 'webp') {
+      mimeType = 'image/webp';
+    }
+
+    extractedText = await extractTextFromEvidenceFile(process.env.GEMINI_AI_KEY, fileBase64, mimeType);
+  }
+
+  const updateData = {
+    extractedText: extractedText
+  };
+  await PBC.updateEvidenceAIDetails(evidence_document_id, updateData, tenantId, userId);
+
+  return extractedText;
+}
 
 // POST get evidence AI details by document ID
 exports.getEvidenceAIDetails = async (req, res) => {
@@ -393,16 +487,7 @@ exports.getEvidenceAIDetails = async (req, res) => {
       return res.status(400).json({ message: 'Evidence URL is required.' });
     }
 
-    console.log('Original URL:', evidence_url);
-    const imageBase64 = await convertImageUrlToBase64(evidence_url);
-    console.log('Image converted to base64 successfully');
-
-    const extractedText = await extractTextFromImage(process.env.GEMINI_AI_KEY, imageBase64);
-
-    const updateData = {
-      extractedText: extractedText
-    };
-    await PBC.updateEvidenceAIDetails(evidence_document_id, updateData, tenantId, userId);
+    const extractedText = await extractEvidenceAIDetails(evidence_document_id, evidence_url, tenantId, userId);
 
     res.json({
       message: 'Evidence AI details fetched successfully.',
@@ -418,6 +503,9 @@ exports.getEvidenceAIDetails = async (req, res) => {
     });
   }
 };
+
+// Export the helper function for use in other controllers
+exports.extractEvidenceAIDetails = extractEvidenceAIDetails;
 
 // POST compare attributes
 exports.compareAttributes = async (req, res) => {
@@ -486,23 +574,27 @@ exports.compareAttributes = async (req, res) => {
           "attribute_description": "string", 
           "test_steps": "string",
           "result": boolean,
-          "reason": "string explaining match/mismatch based on context"
+          "reason": "string explaining match/mismatch based on context",
+          "attribute_final_result": boolean
         }
       ],
       summary: "string",
       total_attributes: number,
       total_attributes_passed: number,
       total_attributes_failed: number,
-      final_result: boolean
+      final_result: boolean,
+      manual_final_result: boolean
     }
     
     Rules:
     - result=true if evidence contextually satisfies the requirement
+    - attribute_final_result same as result
     - result=false if evidence contradicts or is missing
     - Compare meaning, not exact wording
     - For numeric values, check if condition is met (>=, <=, ==)
     - Be strict but contextually aware
-    - final_result is true if all attributes are passed, false otherwise`;
+    - final_result is true if all attributes are passed, false otherwise
+    - manual_final_result is same as final_result`;
 
     const requestBody = {
       contents: [{
@@ -698,6 +790,12 @@ exports.getTestExecutionEvidenceDocuments = async (req, res) => {
 
 // POST save annotated image and update result_artifact_url
 exports.saveAnnotatedImage = (req, res) => {
+  // Set CORS headers explicitly for file upload responses
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  
   uploadExecutionEvidence(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ message: 'File upload error: ' + err.message });
@@ -721,7 +819,28 @@ exports.saveAnnotatedImage = (req, res) => {
       }
 
       if (!req.file) {
-        return res.status(400).json({ message: 'No image file provided.' });
+        return res.status(400).json({ message: 'No file provided.' });
+      }
+
+      // Detect file type from mimetype or extension
+      const fileMimeType = req.file.mimetype;
+      let fileExtension = req.file.originalname.toLowerCase().split('.').pop();
+      
+      // If extension not found, try to infer from mime type
+      if (!fileExtension) {
+        if (fileMimeType === 'application/pdf') {
+          fileExtension = 'pdf';
+        } else if (fileMimeType === 'application/msword') {
+          fileExtension = 'doc';
+        } else if (fileMimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+          fileExtension = 'docx';
+        } else if (fileMimeType === 'application/vnd.ms-excel') {
+          fileExtension = 'xls';
+        } else if (fileMimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+          fileExtension = 'xlsx';
+        } else {
+          fileExtension = 'png'; // default
+        }
       }
 
       if (!tenantId) {
@@ -755,9 +874,9 @@ exports.saveAnnotatedImage = (req, res) => {
         }
       }
 
-      // Rename the file with proper control_id
+      // Rename the file with proper control_id and correct extension
       const timestamp = Date.now();
-      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.png`;
+      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.${fileExtension}`;
       const finalPath = path.join(path.dirname(req.file.path), finalFilename);
       
       try {
@@ -831,8 +950,11 @@ exports.saveAnnotatedImage = (req, res) => {
         return res.status(404).json({ message: 'Failed to update result artifact URL.' });
       }
 
+      // Ensure CORS headers are set in success response
+      res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.header('Access-Control-Allow-Credentials', 'true');
       res.json({ 
-        message: 'Annotated image saved successfully.',
+        message: fileExtension === 'pdf' ? 'Annotated PDF saved successfully.' : 'Annotated image saved successfully.',
         result_artifact_url: resultArtifactUrl
       });
 
@@ -843,14 +965,23 @@ exports.saveAnnotatedImage = (req, res) => {
           if (unlinkErr) console.error("Failed to delete temp file after error:", unlinkErr);
         });
       }
-      console.error('Error saving annotated image:', error);
-      res.status(500).json({ message: 'Server error during image save.' });
+      console.error('Error saving annotated file:', error);
+      // Ensure CORS headers are set in error response
+      res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.status(500).json({ message: 'Server error during file save.' });
     }
   });
 };
 
-async function extractTextFromImage(apiKey, imageBase64) {
-  const prompt = `This image is a screenshot from MS active directory showing Policy settings, analyse the image and extract the settings into a JSON file`;
+async function extractTextFromEvidenceFile(apiKey, fileBase64, mimeType = 'image/png') {
+  // Adjust prompt based on file type
+  let prompt = '';
+  if (mimeType === 'application/pdf') {
+    prompt = `This is a PDF document containing policy settings or configuration information. Analyse the document and extract the settings into a JSON file. Extract all relevant policy settings, configurations, and important information from the PDF.`;
+  } else {
+    prompt = `This image is a screenshot from MS active directory showing Policy settings, analyse the image and extract the settings into a JSON file`;
+  }
 
   const requestBody = {
     contents: [{
@@ -858,8 +989,8 @@ async function extractTextFromImage(apiKey, imageBase64) {
         { text: prompt },
         {
           inline_data: {
-            mime_type: "image/png",
-            data: imageBase64
+            mime_type: mimeType,
+            data: fileBase64
           }
         }
       ]
@@ -898,6 +1029,124 @@ async function extractTextFromImage(apiKey, imageBase64) {
   return result;
 }
 
+// PUT update test execution evidence document result (attribute_final_result and manual_final_result)
+exports.updateTestExecutionEvidenceResult = async (req, res) => {
+  try {
+    const { test_execution_id, evidence_document_id, updated_result } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id || !evidence_document_id) {
+      return res.status(400).json({ message: 'Test execution ID and evidence document ID are required.' });
+    }
+
+    if (!updated_result) {
+      return res.status(400).json({ message: 'Updated result is required.' });
+    }
+
+    // Check if test execution is completed - if so, don't allow updates
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    if (testExecution.status === 'completed') {
+      return res.status(400).json({ message: 'Cannot update results when test execution is completed.' });
+    }
+
+    // Get existing record
+    const existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+      test_execution_id,
+      evidence_document_id,
+      tenantId
+    );
+
+    if (!existingRecord) {
+      return res.status(404).json({ message: 'Test execution evidence document not found.' });
+    }
+
+    // Update the result
+    const updated = await TestExecutionEvidenceDocuments.updateResult(
+      test_execution_id,
+      evidence_document_id,
+      updated_result,
+      tenantId,
+      userId
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Failed to update result.' });
+    }
+
+    res.json({ message: 'Test execution evidence result updated successfully.' });
+  } catch (error) {
+    console.error('Error updating test execution evidence result:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// PUT update test execution status and result
+exports.updateTestExecutionStatusAndResult = async (req, res) => {
+  try {
+    const { test_execution_id, status, result } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    if (!status || !result) {
+      return res.status(400).json({ message: 'Status and result are required.' });
+    }
+
+    // Validate status
+    if (!['pending', 'in_progress', 'completed', 'failed'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value.' });
+    }
+
+    // Validate result
+    if (!['pass', 'fail', 'partial', 'na'].includes(result)) {
+      return res.status(400).json({ message: 'Invalid result value.' });
+    }
+
+    // Check if already completed - if so, don't allow changes
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    if (testExecution.status === 'completed' && status !== 'completed') {
+      return res.status(400).json({ message: 'Cannot change status from completed. This action cannot be reverted.' });
+    }
+
+    const updated = await TestExecution.updateStatusAndResult(
+      test_execution_id,
+      status,
+      result,
+      tenantId,
+      userId
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Failed to update test execution status and result.' });
+    }
+
+    res.json({ message: 'Test execution status and result updated successfully.' });
+  } catch (error) {
+    console.error('Error updating test execution status and result:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
 async function convertImageUrlToBase64(imageUrl) {
   try {
     const finalPath = 'uploads/'.concat(imageUrl);
@@ -907,6 +1156,171 @@ async function convertImageUrlToBase64(imageUrl) {
     return base64;
   } catch (error) {
     throw new Error(`Error converting image to base64: ${error.message}`);
+  }
+}
+
+/**
+ * Convert office document (doc, docx, xls, xlsx) to PDF using libreoffice-convert
+ * @param {string} filePath - Path to the office document
+ * @returns {Promise<Buffer>} - PDF buffer
+ */
+async function convertOfficeToPdf(filePath) {
+  try {
+    const fileBuffer = await fs.readFile(filePath);
+    const pdfBuffer = await libreConvert(fileBuffer, '.pdf', undefined);
+    return pdfBuffer;
+  } catch (error) {
+    console.error('Error converting office document to PDF:', error);
+    throw new Error(`Failed to convert office document to PDF: ${error.message}`);
+  }
+}
+
+/**
+ * Extract text from Word document (doc, docx) by converting to PDF first
+ * @param {string} apiKey - Gemini API key
+ * @param {string} wordPath - Path to the Word document (relative to uploads folder)
+ * @returns {Promise<string>} - Extracted text as JSON string
+ */
+async function extractTextFromWord(apiKey, wordPath) {
+  try {
+    // Construct full file path
+    const fullPath = path.join(__dirname, '..', 'uploads', wordPath);
+    
+    // Check if file exists
+    try {
+      await fs.access(fullPath);
+    } catch (accessError) {
+      throw new Error(`Word document not found at path: ${fullPath}`);
+    }
+
+    // Convert Word document to PDF
+    console.log('Converting Word document to PDF:', fullPath);
+    const pdfBuffer = await convertOfficeToPdf(fullPath);
+    console.log('Word document converted to PDF successfully');
+
+    // Convert PDF buffer to base64
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // Extract text from PDF using Gemini AI
+    const prompt = `This is a PDF document converted from a Word document containing policy settings or configuration information. Analyse the document and extract the settings into a JSON file. Extract all relevant policy settings, configurations, and important information from the document.`;
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: 'application/pdf',
+              data: pdfBase64
+            }
+          }
+        ]
+      }]
+    };
+
+    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+    console.log('Calling Gemini API for Word document...');
+
+    const response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = response.data;
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult);
+    return result;
+  } catch (error) {
+    console.error('Error extracting text from Word document:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extract text from Excel document (xls, xlsx) by converting to PDF first
+ * @param {string} apiKey - Gemini API key
+ * @param {string} excelPath - Path to the Excel document (relative to uploads folder)
+ * @returns {Promise<string>} - Extracted text as JSON string
+ */
+async function extractTextFromExcelWithImages(apiKey, excelPath) {
+  try {
+    // Construct full file path
+    const fullPath = path.join(__dirname, '..', 'uploads', excelPath);
+    
+    // Check if file exists
+    try {
+      await fs.access(fullPath);
+    } catch (accessError) {
+      throw new Error(`Excel document not found at path: ${fullPath}`);
+    }
+
+    // Convert Excel document to PDF
+    console.log('Converting Excel document to PDF:', fullPath);
+    const pdfBuffer = await convertOfficeToPdf(fullPath);
+    console.log('Excel document converted to PDF successfully');
+
+    // Convert PDF buffer to base64
+    const pdfBase64 = pdfBuffer.toString('base64');
+
+    // Extract text from PDF using Gemini AI
+    const prompt = `This is a PDF document converted from an Excel spreadsheet containing policy settings, configuration information, or data tables. Analyse the document and extract all relevant information including:
+- Policy settings and configurations
+- Data tables and their values
+- Any important information from cells
+- Headers and labels
+Extract everything into a structured JSON file.`;
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: 'application/pdf',
+              data: pdfBase64
+            }
+          }
+        ]
+      }]
+    };
+
+    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+    console.log('Calling Gemini API for Excel document...');
+
+    const response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const data = response.data;
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(resultText);
+    } catch (parseError) {
+      console.error('Invalid JSON from Gemini:', resultText);
+      throw new Error('Invalid JSON response from AI');
+    }
+
+    const result = JSON.stringify(parsedResult);
+    return result;
+  } catch (error) {
+    console.error('Error extracting text from Excel document:', error);
+    throw error;
   }
 }
 

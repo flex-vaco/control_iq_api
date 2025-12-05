@@ -1,9 +1,12 @@
 const Client = require('../models/client.model');
+const { isSuperAdmin } = require('../utils/auth.helper');
 
 // GET all clients for the logged-in user's tenant
 exports.getAllClients = async (req, res) => {
   try {
-    const tenantId = req.user.tenantId;
+    const requestedTenantId = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+    // Super admin can see all data or filter by tenant, regular users see only their tenant
+    const tenantId = isSuperAdmin(req.user) ? requestedTenantId : req.user.tenantId;
     const data = await Client.findAllByTenant(tenantId);
     res.json(data);
   } catch (error) {
