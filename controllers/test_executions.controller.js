@@ -5,6 +5,11 @@ const multer = require('multer');
 const axios = require('axios');
 const libre = require('libreoffice-convert');
 const { promisify } = require('util');
+const ExcelJS = require('exceljs');
+const FormData = require('form-data');
+const mammoth = require('mammoth');
+const AdmZip = require('adm-zip');
+const { parseStringPromise } = require('xml2js');
 const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
@@ -1175,8 +1180,422 @@ async function convertOfficeToPdf(filePath) {
   }
 }
 
+// ============================================
+// WORD EXTRACTION HELPER FUNCTIONS
+// ============================================
+
+async function extractWordMetadata(filePath) {
+  const zip = new AdmZip(filePath);
+  const metadata = {
+    core: {},
+    app: {},
+    custom: {}
+  };
+
+  try {
+    // Extract core properties
+    const coreXml = zip.readAsText('docProps/core.xml');
+    const coreData = await parseStringPromise(coreXml);
+    const coreProps = coreData['cp:coreProperties'];
+    
+    if (coreProps) {
+      metadata.core = {
+        title: coreProps['dc:title']?.[0] || null,
+        subject: coreProps['dc:subject']?.[0] || null,
+        creator: coreProps['dc:creator']?.[0] || null,
+        keywords: coreProps['cp:keywords']?.[0] || null,
+        description: coreProps['dc:description']?.[0] || null,
+        lastModifiedBy: coreProps['cp:lastModifiedBy']?.[0] || null,
+        revision: coreProps['cp:revision']?.[0] || null,
+        created: coreProps['dcterms:created']?.[0]?._ || null,
+        modified: coreProps['dcterms:modified']?.[0]?._ || null
+      };
+    }
+
+    // Extract app properties
+    const appXml = zip.readAsText('docProps/app.xml');
+    const appData = await parseStringPromise(appXml);
+    const appProps = appData.Properties;
+    
+    if (appProps) {
+      metadata.app = {
+        application: appProps.Application?.[0] || null,
+        appVersion: appProps.AppVersion?.[0] || null,
+        totalTime: appProps.TotalTime?.[0] || null,
+        pages: parseInt(appProps.Pages?.[0]) || 0,
+        words: parseInt(appProps.Words?.[0]) || 0,
+        characters: parseInt(appProps.Characters?.[0]) || 0,
+        lines: parseInt(appProps.Lines?.[0]) || 0,
+        paragraphs: parseInt(appProps.Paragraphs?.[0]) || 0,
+        company: appProps.Company?.[0] || null
+      };
+    }
+  } catch (error) {
+    console.warn(`Could not extract all metadata: ${error.message}`);
+  }
+
+  return metadata;
+}
+
+async function extractWordImages(filePath) {
+  const zip = new AdmZip(filePath);
+  const images = [];
+  
+  const mediaEntries = zip.getEntries().filter(entry => 
+    entry.entryName.startsWith('word/media/')
+  );
+
+  mediaEntries.forEach((entry, idx) => {
+    const filename = path.basename(entry.entryName);
+    const ext = path.extname(filename).toLowerCase().slice(1);
+    const buffer = entry.getData();
+    
+    images.push({
+      id: `img_${idx}`,
+      filename: filename,
+      extension: ext,
+      path: entry.entryName,
+      buffer: buffer,
+      size: buffer.length
+    });
+  });
+
+  return images;
+}
+
+async function extractWordTables(filePath) {
+  const result = await mammoth.convertToHtml(
+    { path: filePath },
+    { 
+      convertImage: mammoth.images.inline(() => ({ src: '' }))
+    }
+  );
+
+  const tables = [];
+  const tableRegex = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+  const tableMatches = [...result.value.matchAll(tableRegex)];
+
+  tableMatches.forEach((match, idx) => {
+    const tableHtml = match[0];
+    const rows = [];
+    
+    // Extract rows
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    const rowMatches = [...tableHtml.matchAll(rowRegex)];
+    
+    rowMatches.forEach(rowMatch => {
+      const cells = [];
+      const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+      const cellMatches = [...rowMatch[1].matchAll(cellRegex)];
+      
+      cellMatches.forEach(cellMatch => {
+        const cellText = cellMatch[1].replace(/<[^>]*>/g, '').trim();
+        cells.push(cellText);
+      });
+      
+      if (cells.length > 0) {
+        rows.push(cells);
+      }
+    });
+
+    if (rows.length > 0) {
+      tables.push({
+        id: `table_${idx}`,
+        rowCount: rows.length,
+        columnCount: rows[0]?.length || 0,
+        headers: rows[0],
+        data: rows.slice(1)
+      });
+    }
+  });
+
+  return tables;
+}
+
+async function extractWordTextContent(filePath) {
+  const result = await mammoth.extractRawText({ path: filePath });
+  return result.value;
+}
+
+async function extractWordStructuredContent(filePath) {
+  const result = await mammoth.convertToHtml(
+    { path: filePath },
+    { 
+      styleMap: [
+        "p[style-name='Heading 1'] => h1:fresh",
+        "p[style-name='Heading 2'] => h2:fresh",
+        "p[style-name='Heading 3'] => h3:fresh",
+        "p[style-name='Heading 4'] => h4:fresh",
+        "p[style-name='Heading 5'] => h5:fresh",
+        "p[style-name='Heading 6'] => h6:fresh"
+      ]
+    }
+  );
+
+  const html = result.value;
+  const structure = {
+    headings: [],
+    paragraphs: [],
+    lists: []
+  };
+
+  // Extract headings
+  const headingRegex = /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi;
+  const headingMatches = [...html.matchAll(headingRegex)];
+  headingMatches.forEach((match, idx) => {
+    structure.headings.push({
+      id: `heading_${idx}`,
+      level: parseInt(match[1]),
+      text: match[2].replace(/<[^>]*>/g, '').trim()
+    });
+  });
+
+  // Extract paragraphs
+  const paraRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  const paraMatches = [...html.matchAll(paraRegex)];
+  paraMatches.forEach((match, idx) => {
+    const text = match[1].replace(/<[^>]*>/g, '').trim();
+    if (text) {
+      structure.paragraphs.push({
+        id: `para_${idx}`,
+        text: text
+      });
+    }
+  });
+
+  // Extract lists
+  const listRegex = /<[ou]l[^>]*>([\s\S]*?)<\/[ou]l>/gi;
+  const listMatches = [...html.matchAll(listRegex)];
+  listMatches.forEach((match, idx) => {
+    const items = [];
+    const itemRegex = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+    const itemMatches = [...match[1].matchAll(itemRegex)];
+    
+    itemMatches.forEach(itemMatch => {
+      const text = itemMatch[1].replace(/<[^>]*>/g, '').trim();
+      if (text) items.push(text);
+    });
+
+    if (items.length > 0) {
+      structure.lists.push({
+        id: `list_${idx}`,
+        type: match[0].startsWith('<ol') ? 'ordered' : 'unordered',
+        items: items
+      });
+    }
+  });
+
+  return structure;
+}
+
+// Upload file to Gemini (reuse from Excel extraction)
+async function uploadWordFileToGemini(apiKey, buffer, filename, mimeType) {
+  const rateLimiter = new RateLimiter(10);
+  await rateLimiter.waitIfNeeded();
+  
+  const formData = new FormData();
+  formData.append('file', buffer, {
+    filename,
+    contentType: mimeType
+  });
+  
+  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
+  const url = `${geminiFilesEndpoint}?key=${apiKey}`;
+  
+  try {
+    const response = await axios.post(url, formData, {
+      headers: formData.getHeaders(),
+      timeout: 60000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+    
+    if (response.status !== 200) {
+      throw new Error(`Upload failed (${response.status}): ${JSON.stringify(response.data)}`);
+    }
+    
+    const result = response.data;
+    
+    // Wait for file to be processed
+    let fileInfo = result.file;
+    while (fileInfo.state === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const checkUrl = `${geminiFilesEndpoint}/${fileInfo.name.split('/').pop()}?key=${apiKey}`;
+      const checkResponse = await axios.get(checkUrl, { timeout: 10000 });
+      fileInfo = checkResponse.data;
+    }
+    
+    if (fileInfo.state === 'FAILED') {
+      throw new Error(`File processing failed: ${fileInfo.error?.message || 'Unknown error'}`);
+    }
+    
+    return {
+      uri: fileInfo.uri,
+      name: fileInfo.name,
+      mimeType: fileInfo.mimeType
+    };
+    
+  } catch (error) {
+    throw new Error(`Upload to Gemini failed: ${error.message}`);
+  }
+}
+
+// Call Gemini API for image analysis (reuse from Excel extraction)
+async function callGeminiForWordImage(apiKey, prompt, fileUris = []) {
+  const rateLimiter = new RateLimiter(10);
+  await rateLimiter.waitIfNeeded();
+  
+  const contents = [{
+    role: 'user',
+    parts: [
+      { text: prompt },
+      ...fileUris.map(uri => ({
+        fileData: {
+          mimeType: uri.mimeType || 'image/jpeg',
+          fileUri: uri.uri
+        }
+      }))
+    ]
+  }];
+  
+  const geminiModel = 'gemini-2.5-flash-image';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+  
+  const payload = {
+    contents,
+    generationConfig: {
+      temperature: 0.1,
+      topK: 32,
+      topP: 1,
+      maxOutputTokens: 8192
+    }
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000
+    });
+    
+    if (response.status !== 200) {
+      throw new Error(`Gemini API error (${response.status}): ${JSON.stringify(response.data)}`);
+    }
+    
+    const result = response.data;
+    
+    if (!result.candidates || result.candidates.length === 0) {
+      throw new Error('No response from Gemini');
+    }
+    
+    const text = result.candidates[0].content.parts[0].text;
+    
+    return text;
+    
+  } catch (error) {
+    throw new Error(`Gemini API call failed: ${error.message}`);
+  }
+}
+
+// Extract content from image
+async function extractWordImageContent(apiKey, imageInfo) {
+  try {
+    console.log(`Analyzing image: ${imageInfo.id}`);
+    
+    const prompt = `Analyze this image from a Word document and extract ALL visible content in a structured format.
+
+IMPORTANT: Return ONLY valid JSON, no markdown formatting, no code blocks.
+
+Extract:
+1. All visible text (headers, labels, data, numbers, captions)
+2. Any tables with their structure (rows, columns, headers, values)
+3. Charts/graphs with their data points and labels
+4. Diagrams or flowcharts with their components
+5. Any other structured data visible in the image
+
+Return the data in this exact JSON format:
+{
+  "text_content": "All raw text found in the image",
+  "structured_data": {
+    "tables": [
+      {
+        "name": "table name or description",
+        "headers": ["column1", "column2", ...],
+        "rows": [
+          ["value1", "value2", ...],
+          ...
+        ]
+      }
+    ],
+    "key_value_pairs": [
+      {"key": "label", "value": "data"}
+    ],
+    "charts": [
+      {
+        "type": "chart type",
+        "title": "chart title",
+        "data": "description of data shown"
+      }
+    ],
+    "diagrams": [
+      {
+        "type": "diagram type",
+        "description": "what the diagram shows"
+      }
+    ]
+  },
+  "summary": "Brief description of what this image contains"
+}`;
+
+    const responseText = await callGeminiForWordImage(apiKey, prompt, [imageInfo]);
+    
+    // Clean up response (remove markdown code blocks if present)
+    let cleanedText = responseText.trim();
+    cleanedText = cleanedText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    const extractedData = JSON.parse(cleanedText);
+    
+    console.log(`Extracted data from ${imageInfo.id}`);
+    
+    return {
+      id: imageInfo.id,
+      filename: imageInfo.filename,
+      extractedContent: extractedData
+    };
+    
+  } catch (error) {
+    console.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
+    return {
+      id: imageInfo.id,
+      filename: imageInfo.filename,
+      extractedContent: null,
+      error: error.message
+    };
+  }
+}
+
+// Cleanup uploaded files from Gemini
+async function cleanupWordUploadedFiles(apiKey, uploadedImages) {
+  console.log('Cleaning up uploaded files from Gemini');
+  
+  let deletedCount = 0;
+  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
+  
+  for (const img of uploadedImages) {
+    try {
+      const fileId = img.uri.split('/').pop();
+      const url = `${geminiFilesEndpoint}/${fileId}?key=${apiKey}`;
+      await axios.delete(url, { timeout: 10000 });
+      deletedCount++;
+    } catch (error) {
+      // Ignore cleanup errors
+    }
+  }
+  
+  console.log(`Deleted ${deletedCount}/${uploadedImages.length} uploaded files`);
+}
+
 /**
- * Extract text from Word document (doc, docx) by converting to PDF first
+ * Extract text from Word document (doc, docx) with image analysis
  * @param {string} apiKey - Gemini API key
  * @param {string} wordPath - Path to the Word document (relative to uploads folder)
  * @returns {Promise<string>} - Extracted text as JSON string
@@ -1193,62 +1612,658 @@ async function extractTextFromWord(apiKey, wordPath) {
       throw new Error(`Word document not found at path: ${fullPath}`);
     }
 
-    // Convert Word document to PDF
-    console.log('Converting Word document to PDF:', fullPath);
-    const pdfBuffer = await convertOfficeToPdf(fullPath);
-    console.log('Word document converted to PDF successfully');
+    console.log('Extracting data from Word file:', fullPath);
 
-    // Convert PDF buffer to base64
-    const pdfBase64 = pdfBuffer.toString('base64');
+    // Extract document metadata
+    console.log('Extracting document metadata...');
+    const documentProperties = await extractWordMetadata(fullPath);
+    console.log('Document metadata extracted');
 
-    // Extract text from PDF using Gemini AI
-    const prompt = `This is a PDF document converted from a Word document containing policy settings or configuration information. Analyse the document and extract the settings into a JSON file. Extract all relevant policy settings, configurations, and important information from the document.`;
-
-    const requestBody = {
-      contents: [{
-        parts: [
-          { text: prompt },
-          {
-            inline_data: {
-              mime_type: 'application/pdf',
-              data: pdfBase64
-            }
-          }
-        ]
-      }]
+    const metadata = {
+      filename: path.basename(fullPath),
+      filepath: fullPath,
+      extractedAt: new Date().toISOString(),
+      documentProperties: documentProperties,
+      content: {},
+      images: [],
+      tables: [],
+      structure: {}
     };
-
-    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
-    console.log('Calling Gemini API for Word document...');
-
-    const response = await axios.post(apiUrl, requestBody, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = response.data;
-    let resultText = data.candidates[0].content.parts[0].text;
-    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
-    let parsedResult;
-    try {
-      parsedResult = JSON.parse(resultText);
-    } catch (parseError) {
-      console.error('Invalid JSON from Gemini:', resultText);
-      throw new Error('Invalid JSON response from AI');
+    // Extract text content
+    console.log('Extracting text content...');
+    metadata.content.rawText = await extractWordTextContent(fullPath);
+    console.log(`Extracted ${metadata.content.rawText.length} characters of text`);
+    
+    // Extract structured content
+    console.log('Extracting structured content...');
+    metadata.structure = await extractWordStructuredContent(fullPath);
+    console.log(`Found ${metadata.structure.headings.length} headings, ${metadata.structure.paragraphs.length} paragraphs, ${metadata.structure.lists.length} lists`);
+    
+    // Extract tables
+    console.log('Extracting tables...');
+    metadata.tables = await extractWordTables(fullPath);
+    console.log(`Extracted ${metadata.tables.length} tables`);
+    
+    // Extract images
+    console.log('Extracting images...');
+    //metadata.images = await extractWordImages(fullPath);
+    console.log(`Extracted ${metadata.images.length} images`);
+    
+    // Upload and analyze images
+    const uploadedImages = [];
+    
+    if (metadata.images.length > 0) {
+      console.log(`Uploading ${metadata.images.length} images to Gemini...`);
+      
+      for (const img of metadata.images) {
+        try {
+          const mimeType = img.extension === 'png' ? 'image/png' : 
+                          img.extension === 'jpg' || img.extension === 'jpeg' ? 'image/jpeg' :
+                          img.extension === 'gif' ? 'image/gif' :
+                          img.extension === 'bmp' ? 'image/bmp' :
+                          'image/png';
+          
+          const filename = `${img.id}.${img.extension}`;
+          
+          console.log(`Uploading ${filename}...`);
+          
+          const uploadResult = await uploadWordFileToGemini(apiKey, img.buffer, filename, mimeType);
+          
+          uploadedImages.push({
+            id: img.id,
+            filename: img.filename,
+            uri: uploadResult.uri,
+            mimeType: uploadResult.mimeType,
+            size: img.size
+          });
+          
+          console.log(`Uploaded ${filename}`);
+          
+        } catch (error) {
+          console.error(`Failed to upload ${img.id}: ${error.message}`);
+        }
+      }
+      
+      console.log(`Total images uploaded: ${uploadedImages.length}`);
+      
+      // Analyze images
+      if (uploadedImages.length > 0) {
+        console.log(`Analyzing ${uploadedImages.length} images...`);
+        
+        const imageAnalysis = await processBatch(
+          uploadedImages,
+          (img) => extractWordImageContent(apiKey, img),
+          3 // batch size
+        );
+        
+        // Merge image analysis back into metadata
+        for (const img of metadata.images) {
+          const analysis = imageAnalysis.find(a => a.id === img.id);
+          if (analysis) {
+            // Remove buffer (too large for JSON)
+            delete img.buffer;
+            // Add extracted content
+            img.extractedContent = analysis.extractedContent;
+            if (analysis.error) {
+              img.extractionError = analysis.error;
+            }
+          } else {
+            delete img.buffer;
+          }
+        }
+        
+        const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
+        console.log(`Successfully analyzed ${successCount}/${uploadedImages.length} images`);
+        
+        // Cleanup uploaded files
+        await cleanupWordUploadedFiles(apiKey, uploadedImages);
+      }
+    } else {
+      // Remove buffers even if no images
+      for (const img of metadata.images) {
+        delete img.buffer;
+      }
     }
-
-    const result = JSON.stringify(parsedResult);
+    
+    // Create summary
+    metadata.summary = {
+      totalCharacters: metadata.content.rawText.length,
+      totalWords: metadata.documentProperties.app.words || metadata.content.rawText.split(/\s+/).length,
+      totalParagraphs: metadata.structure.paragraphs.length,
+      totalHeadings: metadata.structure.headings.length,
+      totalLists: metadata.structure.lists.length,
+      totalTables: metadata.tables.length,
+      totalImages: metadata.images.length,
+      imagesAnalyzed: metadata.images.filter(img => img.extractedContent !== null).length,
+      pages: metadata.documentProperties.app.pages || 0
+    };
+    
+    console.log('Word extraction completed successfully');
+    
+    // Return as JSON string for database storage
+    const result = JSON.stringify(metadata);
     return result;
+    
   } catch (error) {
     console.error('Error extracting text from Word document:', error);
     throw error;
   }
 }
 
+// ============================================
+// EXCEL EXTRACTION HELPER FUNCTIONS
+// ============================================
+
+function colToLetter(col) {
+  let letter = '';
+  while (col >= 0) {
+    letter = String.fromCharCode((col % 26) + 65) + letter;
+    col = Math.floor(col / 26) - 1;
+  }
+  return letter;
+}
+
+function formatCellValue(cell) {
+  if (!cell || cell.value === null || cell.value === undefined) {
+    return { raw: null, formatted: '', type: 'empty' };
+  }
+
+  const cellValue = cell.value;
+  let raw = cellValue;
+  let formatted = '';
+  let type = 'string';
+
+  if (typeof cellValue === 'number') {
+    type = 'number';
+    raw = cellValue;
+    formatted = cell.numFmt ? cell.text : cellValue.toString();
+  } else if (cellValue instanceof Date) {
+    type = 'date';
+    raw = cellValue.toISOString();
+    formatted = cell.text || cellValue.toLocaleDateString();
+  } else if (typeof cellValue === 'boolean') {
+    type = 'boolean';
+    raw = cellValue;
+    formatted = cellValue.toString();
+  } else if (typeof cellValue === 'object') {
+    if (cellValue.formula) {
+      type = 'formula';
+      raw = cellValue.formula;
+      formatted = cellValue.result?.toString() || '';
+    } else if (cellValue.richText) {
+      type = 'richText';
+      raw = cellValue.richText.map(rt => rt.text).join('');
+      formatted = raw;
+    } else if (cellValue.text) {
+      type = 'string';
+      raw = cellValue.text;
+      formatted = cellValue.text;
+    } else {
+      raw = JSON.stringify(cellValue);
+      formatted = raw;
+    }
+  } else {
+    raw = cellValue.toString();
+    formatted = raw;
+  }
+
+  return { raw, formatted, type };
+}
+
+function extractCellStyle(cell) {
+  const style = {};
+  
+  if (cell.font) {
+    style.font = {
+      name: cell.font.name,
+      size: cell.font.size,
+      bold: cell.font.bold,
+      italic: cell.font.italic,
+      underline: cell.font.underline,
+      color: cell.font.color?.argb
+    };
+  }
+  
+  if (cell.fill && cell.fill.type === 'pattern') {
+    style.fill = {
+      type: cell.fill.pattern,
+      fgColor: cell.fill.fgColor?.argb,
+      bgColor: cell.fill.bgColor?.argb
+    };
+  }
+  
+  if (cell.border) {
+    style.border = {
+      top: cell.border.top ? { style: cell.border.top.style, color: cell.border.top.color?.argb } : null,
+      left: cell.border.left ? { style: cell.border.left.style, color: cell.border.left.color?.argb } : null,
+      bottom: cell.border.bottom ? { style: cell.border.bottom.style, color: cell.border.bottom.color?.argb } : null,
+      right: cell.border.right ? { style: cell.border.right.style, color: cell.border.right.color?.argb } : null
+    };
+  }
+  
+  if (cell.alignment) {
+    style.alignment = {
+      horizontal: cell.alignment.horizontal,
+      vertical: cell.alignment.vertical,
+      wrapText: cell.alignment.wrapText,
+      indent: cell.alignment.indent
+    };
+  }
+  
+  if (cell.numFmt) {
+    style.numberFormat = cell.numFmt;
+  }
+  
+  return Object.keys(style).length > 0 ? style : null;
+}
+
+function extractSheetData(worksheet, sheetName) {
+  console.log(`Processing sheet: ${sheetName}`);
+  
+  const data = {
+    name: sheetName,
+    dimensions: {
+      rowCount: worksheet.rowCount,
+      columnCount: worksheet.columnCount,
+      actualRowCount: worksheet.actualRowCount,
+      actualColumnCount: worksheet.actualColumnCount
+    },
+    cells: [],
+    mergedCells: [],
+    images: [],
+    comments: [],
+    dataValidations: [],
+    conditionalFormatting: []
+  };
+
+  // Extract merged cells
+  if (worksheet._merges && Object.keys(worksheet._merges).length > 0) {
+    for (const merge in worksheet._merges) {
+      data.mergedCells.push(merge);
+    }
+    console.log(`Found ${data.mergedCells.length} merged cell ranges`);
+  }
+
+  // Extract all cells
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      const cellAddress = `${colToLetter(colNumber - 1)}${rowNumber}`;
+      const valueData = formatCellValue(cell);
+      const style = extractCellStyle(cell);
+      
+      const cellData = {
+        address: cellAddress,
+        row: rowNumber,
+        col: colNumber,
+        colLetter: colToLetter(colNumber - 1),
+        value: valueData.raw,
+        formattedValue: valueData.formatted,
+        type: valueData.type
+      };
+      
+      if (style) cellData.style = style;
+      if (cell.note) cellData.note = cell.note;
+      
+      data.cells.push(cellData);
+    });
+  });
+  
+  console.log(`Extracted ${data.cells.length} cells with content`);
+
+  // Extract images with buffers for later analysis
+  if (worksheet._media && worksheet._media.length > 0) {
+    worksheet._media.forEach((media, idx) => {
+      try {
+        const imageData = {
+          id: `${sheetName}_img_${idx}`,
+          sheetName: sheetName,
+          type: media.type,
+          extension: media.extension,
+          position: {
+            from: {
+              col: media.range.tl.nativeCol,
+              row: media.range.tl.nativeRow,
+              colOff: media.range.tl.nativeColOff,
+              rowOff: media.range.tl.nativeRowOff
+            },
+            to: {
+              col: media.range.br.nativeCol,
+              row: media.range.br.nativeRow,
+              colOff: media.range.br.nativeColOff,
+              rowOff: media.range.br.nativeRowOff
+            }
+          },
+          buffer: media.buffer, // Keep buffer for upload
+          size: media.buffer ? media.buffer.length : 0
+        };
+        
+        data.images.push(imageData);
+      } catch (error) {
+        console.warn(`Failed to extract image ${idx}: ${error.message}`);
+      }
+    });
+    
+    console.log(`Extracted ${data.images.length} images`);
+  }
+
+  // Extract data validations
+  if (worksheet.dataValidations && worksheet.dataValidations.model) {
+    for (const [range, validation] of Object.entries(worksheet.dataValidations.model)) {
+      data.dataValidations.push({
+        range,
+        type: validation.type,
+        operator: validation.operator,
+        formulae: validation.formulae,
+        allowBlank: validation.allowBlank
+      });
+    }
+    
+    if (data.dataValidations.length > 0) {
+      console.log(`Extracted ${data.dataValidations.length} data validations`);
+    }
+  }
+
+  // Extract conditional formatting
+  if (worksheet.conditionalFormattings) {
+    worksheet.conditionalFormattings.forEach((cf, idx) => {
+      data.conditionalFormatting.push({
+        id: idx,
+        ref: cf.ref,
+        rules: cf.rules
+      });
+    });
+    
+    if (data.conditionalFormatting.length > 0) {
+      console.log(`Extracted ${data.conditionalFormatting.length} conditional formatting rules`);
+    }
+  }
+
+  // Extract comments
+  worksheet.eachRow((row, rowNumber) => {
+    row.eachCell((cell, colNumber) => {
+      if (cell.note) {
+        const cellAddress = `${colToLetter(colNumber - 1)}${rowNumber}`;
+        data.comments.push({
+          address: cellAddress,
+          row: rowNumber,
+          col: colNumber,
+          note: cell.note
+        });
+      }
+    });
+  });
+  
+  if (data.comments.length > 0) {
+    console.log(`Extracted ${data.comments.length} comments`);
+  }
+
+  return data;
+}
+
+// Rate limiter for Gemini API
+class RateLimiter {
+  constructor(maxRequestsPerMinute) {
+    this.maxRPM = maxRequestsPerMinute;
+    this.requestTimestamps = [];
+  }
+  
+  async waitIfNeeded() {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    
+    this.requestTimestamps = this.requestTimestamps.filter(t => t > oneMinuteAgo);
+    
+    if (this.requestTimestamps.length < this.maxRPM) {
+      this.requestTimestamps.push(now);
+      return 0;
+    }
+    
+    const oldestRequest = this.requestTimestamps[0];
+    const timeSinceOldest = now - oldestRequest;
+    const waitTime = 60000 - timeSinceOldest + 1000;
+    
+    if (waitTime > 0) {
+      console.warn(`Rate limit reached. Waiting ${(waitTime/1000).toFixed(1)}s...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      const afterWait = Date.now();
+      this.requestTimestamps = this.requestTimestamps.filter(t => t > afterWait - 60000);
+      this.requestTimestamps.push(afterWait);
+      
+      return waitTime;
+    } else {
+      this.requestTimestamps.push(now);
+      return 0;
+    }
+  }
+}
+
+// Batch processing utility
+async function processBatch(items, processFn, batchSize) {
+  const results = [];
+  
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchNumber = Math.floor(i / batchSize) + 1;
+    const totalBatches = Math.ceil(items.length / batchSize);
+    
+    console.log(`Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`);
+    
+    const batchResults = await Promise.all(
+      batch.map(item => processFn(item))
+    );
+    
+    results.push(...batchResults);
+  }
+  
+  return results;
+}
+
+// Upload file to Gemini
+async function uploadFileToGemini(apiKey, buffer, filename, mimeType) {
+  const rateLimiter = new RateLimiter(10); // 10 requests per minute
+  await rateLimiter.waitIfNeeded();
+  
+  const formData = new FormData();
+  formData.append('file', buffer, {
+    filename,
+    contentType: mimeType
+  });
+  
+  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
+  const url = `${geminiFilesEndpoint}?key=${apiKey}`;
+  
+  try {
+    // Use axios for FormData upload with timeout
+    const response = await axios.post(url, formData, {
+      headers: formData.getHeaders(),
+      timeout: 60000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+    
+    if (response.status !== 200) {
+      throw new Error(`Upload failed (${response.status}): ${JSON.stringify(response.data)}`);
+    }
+    
+    const result = response.data;
+    
+    // Wait for file to be processed
+    let fileInfo = result.file;
+    while (fileInfo.state === 'PROCESSING') {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const checkUrl = `${geminiFilesEndpoint}/${fileInfo.name.split('/').pop()}?key=${apiKey}`;
+      const checkResponse = await axios.get(checkUrl, { timeout: 10000 });
+      fileInfo = checkResponse.data;
+    }
+    
+    if (fileInfo.state === 'FAILED') {
+      throw new Error(`File processing failed: ${fileInfo.error?.message || 'Unknown error'}`);
+    }
+    
+    return {
+      uri: fileInfo.uri,
+      name: fileInfo.name,
+      mimeType: fileInfo.mimeType
+    };
+    
+  } catch (error) {
+    throw new Error(`Upload to Gemini failed: ${error.message}`);
+  }
+}
+
+// Call Gemini API for image analysis
+async function callGeminiForImage(apiKey, prompt, fileUris = []) {
+  const rateLimiter = new RateLimiter(10);
+  await rateLimiter.waitIfNeeded();
+  
+  const contents = [{
+    role: 'user',
+        parts: [
+          { text: prompt },
+      ...fileUris.map(uri => ({
+        fileData: {
+          mimeType: uri.mimeType || 'image/jpeg',
+          fileUri: uri.uri
+        }
+      }))
+    ]
+  }];
+  
+  const geminiModel = 'gemini-2.5-flash-image';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+  
+  const payload = {
+    contents,
+    generationConfig: {
+      temperature: 0.1,
+      topK: 32,
+      topP: 1,
+      maxOutputTokens: 8192
+    }
+  };
+  
+  try {
+    const response = await axios.post(url, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000
+    });
+    
+    if (response.status !== 200) {
+      throw new Error(`Gemini API error (${response.status}): ${JSON.stringify(response.data)}`);
+    }
+    
+    const result = response.data;
+    
+    if (!result.candidates || result.candidates.length === 0) {
+      throw new Error('No response from Gemini');
+    }
+    
+    const text = result.candidates[0].content.parts[0].text;
+    
+    return text;
+    
+  } catch (error) {
+    throw new Error(`Gemini API call failed: ${error.message}`);
+  }
+}
+
+// Extract content from image
+async function extractImageContent(apiKey, imageInfo) {
+  try {
+    console.log(`Analyzing image: ${imageInfo.id}`);
+    
+    const prompt = `Analyze this image and extract ALL visible content in a structured format.
+
+IMPORTANT: Return ONLY valid JSON, no markdown formatting, no code blocks.
+
+Extract:
+1. All visible text (headers, labels, data, numbers)
+2. Any tables with their structure (rows, columns, headers, values)
+3. Charts/graphs with their data points and labels
+4. Any other structured data visible in the image
+
+Return the data in this exact JSON format:
+{
+  "text_content": "All raw text found in the image",
+  "structured_data": {
+    "tables": [
+      {
+        "name": "table name or description",
+        "headers": ["column1", "column2", ...],
+        "rows": [
+          ["value1", "value2", ...],
+          ...
+        ]
+      }
+    ],
+    "key_value_pairs": [
+      {"key": "label", "value": "data"}
+    ],
+    "charts": [
+      {
+        "type": "chart type",
+        "title": "chart title",
+        "data": "description of data shown"
+      }
+    ]
+  },
+  "summary": "Brief description of what this image contains"
+}`;
+
+    const responseText = await callGeminiForImage(apiKey, prompt, [imageInfo]);
+    
+    // Clean up response (remove markdown code blocks if present)
+    let cleanedText = responseText.trim();
+    cleanedText = cleanedText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    const extractedData = JSON.parse(cleanedText);
+    
+    console.log(`Extracted data from ${imageInfo.id}`);
+    
+    return {
+      id: imageInfo.id,
+      sheetName: imageInfo.sheetName,
+      position: imageInfo.position,
+      extractedContent: extractedData
+    };
+    
+  } catch (error) {
+    console.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
+    return {
+      id: imageInfo.id,
+      sheetName: imageInfo.sheetName,
+      position: imageInfo.position,
+      extractedContent: null,
+      error: error.message
+    };
+  }
+}
+
+// Cleanup uploaded files from Gemini
+async function cleanupUploadedFiles(apiKey, uploadedImages) {
+  console.log('Cleaning up uploaded files from Gemini');
+  
+  let deletedCount = 0;
+  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
+  
+  for (const img of uploadedImages) {
+    try {
+      const fileId = img.uri.split('/').pop();
+      const url = `${geminiFilesEndpoint}/${fileId}?key=${apiKey}`;
+      await axios.delete(url, { timeout: 10000 });
+      deletedCount++;
+    } catch (error) {
+      // Ignore cleanup errors
+    }
+  }
+  
+  console.log(`Deleted ${deletedCount}/${uploadedImages.length} uploaded files`);
+}
+
 /**
- * Extract text from Excel document (xls, xlsx) by converting to PDF first
+ * Extract text from Excel document (xls, xlsx) with image analysis
  * @param {string} apiKey - Gemini API key
  * @param {string} excelPath - Path to the Excel document (relative to uploads folder)
  * @returns {Promise<string>} - Extracted text as JSON string
@@ -1265,59 +2280,143 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
       throw new Error(`Excel document not found at path: ${fullPath}`);
     }
 
-    // Convert Excel document to PDF
-    console.log('Converting Excel document to PDF:', fullPath);
-    const pdfBuffer = await convertOfficeToPdf(fullPath);
-    console.log('Excel document converted to PDF successfully');
+    console.log('Extracting data from Excel file:', fullPath);
 
-    // Convert PDF buffer to base64
-    const pdfBase64 = pdfBuffer.toString('base64');
-
-    // Extract text from PDF using Gemini AI
-    const prompt = `This is a PDF document converted from an Excel spreadsheet containing policy settings, configuration information, or data tables. Analyse the document and extract all relevant information including:
-- Policy settings and configurations
-- Data tables and their values
-- Any important information from cells
-- Headers and labels
-Extract everything into a structured JSON file.`;
-
-    const requestBody = {
-      contents: [{
-        parts: [
-          { text: prompt },
-          {
-            inline_data: {
-              mime_type: 'application/pdf',
-              data: pdfBase64
-            }
-          }
-        ]
-      }]
-    };
-
-    const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
-    console.log('Calling Gemini API for Excel document...');
-
-    const response = await axios.post(apiUrl, requestBody, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const data = response.data;
-    let resultText = data.candidates[0].content.parts[0].text;
-    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    // Load Excel workbook
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(fullPath);
     
-    let parsedResult;
-    try {
-      parsedResult = JSON.parse(resultText);
-    } catch (parseError) {
-      console.error('Invalid JSON from Gemini:', resultText);
-      throw new Error('Invalid JSON response from AI');
+    console.log(`Loaded workbook with ${workbook.worksheets.length} sheets`);
+    
+    const metadata = {
+      filename: path.basename(fullPath),
+      filepath: fullPath,
+      extractedAt: new Date().toISOString(),
+      workbook: {
+        creator: workbook.creator,
+        lastModifiedBy: workbook.lastModifiedBy,
+        created: workbook.created,
+        modified: workbook.modified,
+        properties: workbook.properties
+      },
+      sheets: []
+    };
+    
+    // Extract data from all sheets
+    for (const worksheet of workbook.worksheets) {
+      try {
+        const sheetData = extractSheetData(worksheet, worksheet.name);
+        metadata.sheets.push(sheetData);
+      } catch (error) {
+        console.error(`Failed to process sheet "${worksheet.name}": ${error.message}`);
+      }
     }
-
-    const result = JSON.stringify(parsedResult);
+    
+    console.log(`Extracted data from ${metadata.sheets.length} sheets`);
+    
+    // Upload and analyze images
+    const allImages = [];
+    const uploadedImages = [];
+    
+    // Collect all images from all sheets
+    for (const sheet of metadata.sheets) {
+      if (sheet.images.length > 0) {
+        console.log(`Uploading ${sheet.images.length} images from "${sheet.name}"`);
+        
+        for (const img of sheet.images) {
+          try {
+            const mimeType = img.extension === 'png' ? 'image/png' : 
+                            img.extension === 'jpg' || img.extension === 'jpeg' ? 'image/jpeg' : 
+                            'image/png';
+            
+            const filename = `${img.id}.${img.extension}`;
+            
+            console.log(`Uploading ${filename}...`);
+            
+            const uploadResult = await uploadFileToGemini(apiKey, img.buffer, filename, mimeType);
+            
+            uploadedImages.push({
+              id: img.id,
+              sheetName: img.sheetName,
+              position: img.position,
+              uri: uploadResult.uri,
+              mimeType: uploadResult.mimeType,
+              size: img.size
+            });
+            
+            console.log(`Uploaded ${filename}`);
+            
+          } catch (error) {
+            console.error(`Failed to upload ${img.id}: ${error.message}`);
+          }
+        }
+      }
+    }
+    
+    console.log(`Total images uploaded: ${uploadedImages.length}`);
+    
+    // Analyze images
+    if (uploadedImages.length > 0) {
+      console.log(`Analyzing ${uploadedImages.length} images...`);
+      
+      const imageAnalysis = await processBatch(
+        uploadedImages,
+        (img) => extractImageContent(apiKey, img),
+        3 // batch size
+      );
+      
+      // Merge image analysis back into metadata
+      for (const sheet of metadata.sheets) {
+        for (const img of sheet.images) {
+          const analysis = imageAnalysis.find(a => a.id === img.id);
+          if (analysis) {
+            // Remove buffer (too large for JSON)
+            delete img.buffer;
+            // Add extracted content
+            img.extractedContent = analysis.extractedContent;
+            if (analysis.error) {
+              img.extractionError = analysis.error;
+            }
+          } else {
+            delete img.buffer;
+          }
+        }
+      }
+      
+      const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
+      console.log(`Successfully analyzed ${successCount}/${uploadedImages.length} images`);
+    } else {
+      // Remove buffers even if no images
+      for (const sheet of metadata.sheets) {
+        for (const img of sheet.images) {
+          delete img.buffer;
+        }
+      }
+    }
+    
+    // Add summary
+    const totalCells = metadata.sheets.reduce((sum, sheet) => sum + sheet.cells.length, 0);
+    const totalImages = metadata.sheets.reduce((sum, sheet) => sum + sheet.images.length, 0);
+    const totalMergedCells = metadata.sheets.reduce((sum, sheet) => sum + sheet.mergedCells.length, 0);
+    
+    metadata.summary = {
+      totalSheets: metadata.sheets.length,
+      totalCells,
+      totalImages,
+      totalMergedCells,
+      sheetNames: metadata.sheets.map(s => s.name)
+    };
+    
+    // Cleanup uploaded files
+    if (uploadedImages.length > 0) {
+      await cleanupUploadedFiles(apiKey, uploadedImages);
+    }
+    
+    // Return as JSON string for database storage
+    const result = JSON.stringify(metadata);
+    console.log('Excel extraction completed successfully');
     return result;
+    
   } catch (error) {
     console.error('Error extracting text from Excel document:', error);
     throw error;
