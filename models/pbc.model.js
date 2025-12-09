@@ -31,7 +31,11 @@ const PBC = {
         (SELECT COUNT(*) FROM evidence_documents d 
          WHERE d.evidence_id = e.evidence_id 
          AND d.deleted_at IS NULL 
-         AND (d.is_policy_document = 0 OR d.is_policy_document IS NULL)) AS document_count
+         AND (d.is_policy_document = 0 OR d.is_policy_document IS NULL)) AS document_count,
+        (SELECT COUNT(*) FROM evidence_documents d 
+         WHERE d.evidence_id = e.evidence_id 
+         AND d.deleted_at IS NULL 
+         AND d.is_policy_document = 1) AS policy_document_count
       FROM evidences e
       JOIN rcm r ON e.rcm_id = r.rcm_id
       JOIN clients c ON e.client_id = c.client_id
