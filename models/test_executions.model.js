@@ -159,6 +159,17 @@ const TestExecution = {
       [status, result, userId, testExecutionId, tenantId]
     );
     return result_query.affectedRows > 0;
+  },
+
+  // Update overall execution result
+  updateOverallExecutionResult: async (testExecutionId, overallResult, tenantId, userId) => {
+    const [result_query] = await db.query(
+      `UPDATE test_executions 
+       SET overall_execution_result = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [overallResult, userId, testExecutionId, tenantId]
+    );
+    return result_query.affectedRows > 0;
   }
 };
 

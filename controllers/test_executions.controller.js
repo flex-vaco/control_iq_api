@@ -2423,3 +2423,302 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
   }
 }
 
+// POST evaluate all evidences for a test execution
+exports.evaluateAllEvidences = async (req, res) => {
+  try {
+    const { test_execution_id, rcm_id, client_id } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    if (!rcm_id) {
+      return res.status(400).json({ message: 'RCM ID is required.' });
+    }
+
+    // Get test execution to find evidence documents
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    // Check if overall_execution_result already exists in database
+    if (testExecution.overall_execution_result) {
+      try {
+        // Parse the existing result from database
+        let parsedResult;
+        if (typeof testExecution.overall_execution_result === 'string') {
+          parsedResult = JSON.parse(testExecution.overall_execution_result);
+        } else {
+          parsedResult = testExecution.overall_execution_result;
+        }
+
+        // Return the existing result in desired format
+        return res.json({
+          message: 'Overall execution results retrieved successfully from database.',
+          results: parsedResult
+        });
+      } catch (parseError) {
+        console.error('Error parsing existing overall_execution_result:', parseError);
+        // If parsing fails, continue with AI evaluation
+      }
+    }
+
+    // If overall_execution_result is null or parsing failed, proceed with AI evaluation
+    // Use client_id from testExecution if not provided in request
+    const finalClientId = client_id || testExecution.client_id;
+    if (!finalClientId) {
+      return res.status(400).json({ message: 'Client ID is required.' });
+    }
+
+    // Get all evidence documents for this test execution
+    const evidenceDocuments = testExecution.pcb_id 
+      ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
+      : [];
+
+    if (evidenceDocuments.length === 0) {
+      return res.status(404).json({ message: 'No evidence documents found for this test execution.' });
+    }
+
+    // Get test attributes
+    const testAttributes = await TestExecution.getTestAttributesByRcmId(rcm_id, tenantId);
+    if (!testAttributes || testAttributes.length === 0) {
+      return res.status(404).json({ message: 'Test attributes not found.' });
+    }
+
+    // Process each evidence document
+    const evidenceResults = [];
+    const attributeEvidenceMap = {}; // Map attribute_name to array of matching evidence documents
+
+    // Initialize attribute map
+    testAttributes.forEach(attr => {
+      attributeEvidenceMap[attr.attribute_name] = {
+        attribute_id: attr.attribute_id,
+        attribute_name: attr.attribute_name,
+        attribute_description: attr.attribute_description,
+        test_steps: attr.test_steps,
+        matching_evidences: [],
+        non_matching_evidences: []
+      };
+    });
+
+    for (const doc of evidenceDocuments) {
+      try {
+        // Step 1: Check if evidence_ai_details exists, if not fetch it
+        let evidenceDocument = await PBC.findEvidenceDocumentById(doc.document_id, tenantId);
+        if (!evidenceDocument) {
+          throw new Error(`Evidence document ${doc.document_id} not found`);
+        }
+
+        let evidenceAiDetails = evidenceDocument.evidence_ai_details;
+        if (!evidenceAiDetails || 
+            (typeof evidenceAiDetails === 'string' && evidenceAiDetails.trim() === '') ||
+            (typeof evidenceAiDetails === 'object' && Object.keys(evidenceAiDetails).length === 0)) {
+          // Fetch AI details
+          await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
+          // Re-fetch document to get updated AI details
+          evidenceDocument = await PBC.findEvidenceDocumentById(doc.document_id, tenantId);
+          evidenceAiDetails = evidenceDocument.evidence_ai_details;
+        }
+
+        // Step 2: Compare attributes - call the compareAttributes logic directly
+        if (!evidenceAiDetails || 
+            (typeof evidenceAiDetails === 'string' && evidenceAiDetails.trim() === '') ||
+            (typeof evidenceAiDetails === 'object' && Object.keys(evidenceAiDetails).length === 0)) {
+          throw new Error(`Evidence AI details not available for document ${doc.document_id}`);
+        }
+
+        // Build attributes list for prompt
+        const attributesList = testAttributes.map((attr) => 
+          `{"attribute_name": "${attr.attribute_name}", "attribute_description": "${attr.attribute_description}", "test_steps": "${attr.test_steps}"}`
+        ).join(',\n');
+
+        const prompt = `Analyze the evidence and verify compliance with each requirement based on context.
+  
+    EVIDENCE:
+    ${evidenceAiDetails}
+    
+    REQUIREMENTS:
+    [${attributesList}]
+    
+    TASK:
+    - Understand the context and meaning of both evidence and requirements
+    - Match based on semantic meaning, not exact text
+    - Consider synonyms, equivalent terms, and policy variations
+    
+    Return JSON array with each requirement evaluated:
+    {
+      attributes_results: [
+        {
+          "attribute_name": "string",
+          "attribute_description": "string", 
+          "test_steps": "string",
+          "result": boolean,
+          "reason": "string explaining match/mismatch based on context",
+          "attribute_final_result": boolean
+        }
+      ],
+      summary: "string",
+      total_attributes: number,
+      total_attributes_passed: number,
+      total_attributes_failed: number,
+      final_result: boolean,
+      manual_final_result: boolean
+    }
+    
+    Rules:
+    - result=true if evidence contextually satisfies the requirement
+    - attribute_final_result same as result
+    - result=false if evidence contradicts or is missing
+    - Compare meaning, not exact wording
+    - For numeric values, check if condition is met (>=, <=, ==)
+    - Be strict but contextually aware
+    - final_result is true if all attributes are passed, false otherwise
+    - manual_final_result is same as final_result`;
+
+        const requestBody = {
+          contents: [{
+            parts: [
+              { text: prompt },
+            ]
+          }]
+        };
+
+        const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${process.env.GEMINI_AI_KEY}`;
+        const response = await axios.post(apiUrl, requestBody, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        const data = response.data;
+        let resultText = data.candidates[0].content.parts[0].text;
+        resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        let parsedResult;
+        try {
+          parsedResult = JSON.parse(resultText);
+        } catch (parseError) {
+          console.error('Invalid JSON from Gemini:', resultText);
+          throw new Error('Invalid JSON response from AI');
+        }
+
+        // Check if record exists, if not create it
+        const existingRecord = await TestExecutionEvidenceDocuments.findByTestExecutionAndEvidenceDocument(
+          test_execution_id,
+          doc.document_id,
+          tenantId
+        );
+
+        if (!existingRecord) {
+          const result = JSON.stringify(parsedResult);
+          const testExecutionEvidenceDocumentData = {
+            test_execution_id: test_execution_id,
+            evidence_document_id: doc.document_id,
+            rcm_id: rcm_id,
+            tenant_id: tenantId,
+            client_id: finalClientId,
+            result: result,
+            status: parsedResult.final_result,
+            total_attributes: parsedResult.total_attributes,
+            total_attributes_passed: parsedResult.total_attributes_passed,
+            total_attributes_failed: parsedResult.total_attributes_failed,
+            created_by: userId
+          };
+          await TestExecutionEvidenceDocuments.create(testExecutionEvidenceDocumentData);
+        }
+
+        if (parsedResult) {
+          const results = parsedResult;
+          const attributesResults = results.attributes_results || [];
+
+          // Store evidence result
+          evidenceResults.push({
+            document_id: doc.document_id,
+            document_name: doc.document_name,
+            artifact_url: doc.artifact_url,
+            results: results,
+            final_result: results.final_result
+          });
+
+          // Map each attribute to its matching/non-matching evidences
+          attributesResults.forEach(attrResult => {
+            const attrName = attrResult.attribute_name;
+            if (attributeEvidenceMap[attrName]) {
+              const evidenceInfo = {
+                document_id: doc.document_id,
+                document_name: doc.document_name,
+                result: attrResult.result,
+                reason: attrResult.reason || attrResult.explanation || ''
+              };
+
+              if (attrResult.result === true) {
+                attributeEvidenceMap[attrName].matching_evidences.push(evidenceInfo);
+              } else {
+                attributeEvidenceMap[attrName].non_matching_evidences.push(evidenceInfo);
+              }
+            }
+          });
+        }
+      } catch (error) {
+        console.error(`Error processing evidence document ${doc.document_id}:`, error);
+        // Continue with next document even if one fails
+        evidenceResults.push({
+          document_id: doc.document_id,
+          document_name: doc.document_name,
+          artifact_url: doc.artifact_url,
+          error: error.message
+        });
+      }
+    }
+
+    // Convert attributeEvidenceMap to array
+    const attributeResults = Object.values(attributeEvidenceMap);
+
+    // Calculate overall summary
+    const totalAttributes = testAttributes.length;
+    let totalAttributesPassed = 0;
+    let totalAttributesFailed = 0;
+
+    attributeResults.forEach(attr => {
+      if (attr.matching_evidences.length > 0) {
+        totalAttributesPassed++;
+      } else {
+        totalAttributesFailed++;
+      }
+    });
+
+    const overallResult = {
+      attribute_results: attributeResults,
+      evidence_results: evidenceResults,
+      total_attributes: totalAttributes,
+      total_attributes_passed: totalAttributesPassed,
+      total_attributes_failed: totalAttributesFailed,
+      total_evidences: evidenceDocuments.length,
+      total_evidences_processed: evidenceResults.filter(r => !r.error).length,
+      final_result: totalAttributesFailed === 0
+    };
+
+    // Save overall result to test_executions table
+    const overallResultJson = JSON.stringify(overallResult);
+    await TestExecution.updateOverallExecutionResult(test_execution_id, overallResultJson, tenantId, userId);
+
+    res.json({
+      message: 'All evidences evaluated successfully.',
+      results: overallResult
+    });
+
+  } catch (error) {
+    console.error('Error evaluating all evidences:', error);
+    res.status(500).json({ 
+      message: 'Server error.',
+      error: error.message 
+    });
+  }
+};
+

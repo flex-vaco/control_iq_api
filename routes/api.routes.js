@@ -58,6 +58,7 @@ router.put('/test-executions/remarks', verifyToken, testExecutionsController.upd
 // Evidence AI Details Route
 router.post('/evidence-ai-details', verifyToken, testExecutionsController.getEvidenceAIDetails);
 router.post('/compare-attributes', verifyToken, testExecutionsController.compareAttributes);
+router.post('/evaluate-all-evidences', verifyToken, testExecutionsController.evaluateAllEvidences);
 router.get('/check-test-execution-evidence', verifyToken, testExecutionsController.checkTestExecutionEvidenceDocument);
 router.get('/test-execution-evidence-documents', verifyToken, testExecutionsController.getTestExecutionEvidenceDocuments);
 router.post('/save-annotated-image', verifyToken, testExecutionsController.saveAnnotatedImage);
