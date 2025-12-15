@@ -27,7 +27,7 @@ exports.getMyPermissions = async (req, res) => {
     if (isSuperAdmin(req.user)) {
       // Return all permissions enabled for super admin
       const allResources = [
-        'RCM', 'PBC', 'Attributes', 'Client', 'Periodic Testing',
+        'RCM', 'PBC', 'Attributes', 'Client', 'Periodic Testing', 'AI Prompts',
         'User Management', 'Role Management', 'Access Control'
       ];
       return res.json(
@@ -66,7 +66,7 @@ exports.updatePermissions = async (req, res) => {
     }
     
     // Validate each permission
-    const validResources = ['RCM', 'PBC', 'Attributes', 'Client', 'Periodic Testing', 'User Management', 'Role Management', 'Access Control'];
+    const validResources = ['RCM', 'PBC', 'Attributes', 'Client', 'Periodic Testing', 'AI Prompts', 'User Management', 'Role Management', 'Access Control'];
     for (const perm of permissions) {
       if (!perm.resource || !validResources.includes(perm.resource)) {
         return res.status(400).json({ 
@@ -93,6 +93,7 @@ exports.getAvailableResources = async (req, res) => {
       { resource: 'Attributes', label: 'Attributes' },
       { resource: 'Client', label: 'Client' },
       { resource: 'Periodic Testing', label: 'Periodic Testing' },
+      { resource: 'AI Prompts', label: 'AI Prompts' },
       { resource: 'User Management', label: 'User Management' },
       { resource: 'Role Management', label: 'Role Management' },
       { resource: 'Access Control', label: 'Access Control' }

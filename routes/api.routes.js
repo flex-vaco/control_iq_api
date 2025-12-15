@@ -11,6 +11,7 @@ const testExecutionsController = require('../controllers/test_executions.control
 const userController = require('../controllers/user.controller');
 const roleController = require('../controllers/role.controller');
 const permissionController = require('../controllers/permission.controller');
+const aiPromptsController = require('../controllers/ai_prompts.controller');
 
 // --- Protected Routes ---
 
@@ -85,5 +86,12 @@ router.get('/permissions/my-permissions', verifyToken, permissionController.getM
 router.put('/permissions/role/:roleId', verifyToken, permissionController.updatePermissions);
 router.get('/permissions/resources', verifyToken, permissionController.getAvailableResources);
 router.get('/permissions/tenants', verifyToken, permissionController.getAllTenants);
+
+// AI Prompts Routes
+router.get('/ai-prompts', verifyToken, aiPromptsController.getAllAiPrompts);
+router.get('/ai-prompts/:id', verifyToken, aiPromptsController.getAiPromptById);
+router.post('/ai-prompts', verifyToken, aiPromptsController.createAiPrompt);
+router.put('/ai-prompts/:id', verifyToken, aiPromptsController.updateAiPrompt);
+router.delete('/ai-prompts/:id', verifyToken, aiPromptsController.deleteAiPrompt);
 
 module.exports = router;

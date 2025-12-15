@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const AiPrompts = require('./ai_prompts.model');
 
 const Client = {
   // Find all clients for a specific tenant (tenantId can be null for super admin)
@@ -52,7 +53,21 @@ const Client = {
       [tenantId, client_name, industry || null, region || null, contact_name || null, contact_email || null, contact_phone || null, status, userId]
     );
     
-    return result.insertId;
+    const clientId = result.insertId;
+    
+    // Create default AI prompt for the client
+    const defaultPromptText = `- Understand the context and meaning of both evidence and requirements
+- Match based on semantic meaning, not exact text
+- Consider synonyms, equivalent terms, and policy variations`;
+    
+    try {
+      await AiPrompts.createDefaultPrompt(clientId, tenantId, userId, defaultPromptText);
+    } catch (error) {
+      // Log error but don't fail client creation if prompt creation fails
+      console.error('Error creating default AI prompt for client:', error);
+    }
+    
+    return clientId;
   },
 
   // Update a client
