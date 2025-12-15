@@ -14,6 +14,7 @@ const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+const AiPrompts = require('../models/ai_prompts.model');
 
 // Promisify libreoffice convert
 const libreConvert = promisify(libre.convert);
@@ -2534,10 +2535,17 @@ exports.evaluateAllEvidences = async (req, res) => {
           throw new Error(`Evidence AI details not available for document ${doc.document_id}`);
         }
 
-        // Build attributes list for prompt
         const attributesList = testAttributes.map((attr) => 
           `{"attribute_name": "${attr.attribute_name}", "attribute_description": "${attr.attribute_description}", "test_steps": "${attr.test_steps}"}`
         ).join(',\n');
+
+        let taskPrompt = await AiPrompts.getPromptByHierarchy(rcm_id, finalClientId, tenantId);
+        
+        if (!taskPrompt) {
+          taskPrompt = `- Understand the context and meaning of both evidence and requirements
+- Match based on semantic meaning, not exact text
+- Consider synonyms, equivalent terms, and policy variations`;
+        }
 
         const prompt = `Analyze the evidence and verify compliance with each requirement based on context.
   
@@ -2548,9 +2556,7 @@ exports.evaluateAllEvidences = async (req, res) => {
     [${attributesList}]
     
     TASK:
-    - Understand the context and meaning of both evidence and requirements
-    - Match based on semantic meaning, not exact text
-    - Consider synonyms, equivalent terms, and policy variations
+    ${taskPrompt}
     
     Return JSON array with each requirement evaluated:
     {
