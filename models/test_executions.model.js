@@ -151,13 +151,36 @@ const TestExecution = {
   },
 
   // Update test execution status and result
-  updateStatusAndResult: async (testExecutionId, status, result, tenantId, userId) => {
-    const [result_query] = await db.query(
-      `UPDATE test_executions 
-       SET status = ?, result = ?, updated_at = NOW(), updated_by = ?
-       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
-      [status, result, userId, testExecutionId, tenantId]
-    );
+  updateStatusAndResult: async (testExecutionId, status, result, testResultChangeComment, tenantId, userId) => {
+    // If comment is provided, append it to remarks, otherwise just update status and result
+    let query;
+    let params;
+    
+    if (testResultChangeComment && testResultChangeComment.trim() !== '') {
+      // Get existing remarks to append the comment
+      const [existingRows] = await db.query(
+        `SELECT remarks FROM test_executions 
+         WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+        [testExecutionId, tenantId]
+      );
+      
+      const existingRemarks = existingRows[0]?.remarks || '';
+      const timestamp = new Date().toISOString();
+      const commentEntry = `\n[${timestamp}] Result changed: ${testResultChangeComment}`;
+      const updatedRemarks = existingRemarks + commentEntry;
+      
+      query = `UPDATE test_executions 
+               SET status = ?, result = ?, remarks = ?, updated_at = NOW(), updated_by = ?
+               WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`;
+      params = [status, result, updatedRemarks, userId, testExecutionId, tenantId];
+    } else {
+      query = `UPDATE test_executions 
+               SET status = ?, result = ?, updated_at = NOW(), updated_by = ?
+               WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`;
+      params = [status, result, userId, testExecutionId, tenantId];
+    }
+    
+    const [result_query] = await db.query(query, params);
     return result_query.affectedRows > 0;
   },
 

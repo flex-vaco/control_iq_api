@@ -1075,6 +1075,61 @@ exports.updateTestExecutionEvidenceResult = async (req, res) => {
       return res.status(404).json({ message: 'Test execution evidence document not found.' });
     }
 
+    // Parse existing result to compare old vs new values
+    let existingResult = null;
+    try {
+      if (typeof existingRecord.result === 'string') {
+        existingResult = JSON.parse(existingRecord.result);
+      } else {
+        existingResult = existingRecord.result;
+      }
+    } catch (parseError) {
+      console.error('Error parsing existing result:', parseError);
+      existingResult = {};
+    }
+
+    // Validate comments for attribute result changes
+    if (updated_result.attributes_results && Array.isArray(updated_result.attributes_results)) {
+      for (let i = 0; i < updated_result.attributes_results.length; i++) {
+        const newAttr = updated_result.attributes_results[i];
+        const oldAttr = existingResult?.attributes_results?.[i];
+        
+        if (oldAttr) {
+          const oldValue = oldAttr.attribute_final_result !== undefined ? oldAttr.attribute_final_result : oldAttr.result;
+          const newValue = newAttr.attribute_final_result;
+          
+          // Check if result changed from pass to fail or fail to pass
+          if (oldValue !== newValue && (oldValue === true || oldValue === false) && (newValue === true || newValue === false)) {
+            // Require comment when changing result
+            if (!newAttr.attribute_result_change_comment || newAttr.attribute_result_change_comment.trim() === '') {
+              return res.status(400).json({ 
+                message: `Comment is required when changing result for attribute "${newAttr.attribute_name || 'Unknown'}".`,
+                field: 'attribute_result_change_comment',
+                attribute_index: i
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Validate comment for overall evidence result change (manual_final_result)
+    if (existingResult && existingResult.manual_final_result !== undefined) {
+      const oldManualResult = existingResult.manual_final_result;
+      const newManualResult = updated_result.manual_final_result;
+      
+      // Check if result changed from pass to fail or fail to pass
+      if (oldManualResult !== newManualResult && (oldManualResult === true || oldManualResult === false) && (newManualResult === true || newManualResult === false)) {
+        // Require comment when changing result
+        if (!updated_result.evidence_result_change_comment || updated_result.evidence_result_change_comment.trim() === '') {
+          return res.status(400).json({ 
+            message: 'Comment is required when changing overall evidence result.',
+            field: 'evidence_result_change_comment'
+          });
+        }
+      }
+    }
+
     // Update the result
     const updated = await TestExecutionEvidenceDocuments.updateResult(
       test_execution_id,
@@ -1098,7 +1153,7 @@ exports.updateTestExecutionEvidenceResult = async (req, res) => {
 // PUT update test execution status and result
 exports.updateTestExecutionStatusAndResult = async (req, res) => {
   try {
-    const { test_execution_id, status, result } = req.body;
+    const { test_execution_id, status, result, test_result_change_comment } = req.body;
     const tenantId = req.user.tenantId;
     const userId = req.user.userId;
 
@@ -1134,10 +1189,23 @@ exports.updateTestExecutionStatusAndResult = async (req, res) => {
       return res.status(400).json({ message: 'Cannot change status from completed. This action cannot be reverted.' });
     }
 
+    // Check if result changed from pass to fail or fail to pass
+    const oldResult = testExecution.result;
+    const isPassToFail = (oldResult === 'pass' && result === 'fail');
+    const isFailToPass = (oldResult === 'fail' && result === 'pass');
+    
+    if ((isPassToFail || isFailToPass) && (!test_result_change_comment || test_result_change_comment.trim() === '')) {
+      return res.status(400).json({ 
+        message: 'Comment is required when changing test result from pass to fail or fail to pass.',
+        field: 'test_result_change_comment'
+      });
+    }
+
     const updated = await TestExecution.updateStatusAndResult(
       test_execution_id,
       status,
       result,
+      test_result_change_comment,
       tenantId,
       userId
     );
