@@ -94,14 +94,15 @@ const PBC = {
           doc.document_name || null,
           doc.artifact_url,
           doc.is_policy_document ? 1 : 0,
+          doc.sample_name || null,
           evidenceData.created_by
         ]).flat();
 
-        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
         
         await connection.query(
           `INSERT INTO evidence_documents 
-            (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by)
+            (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, sample_name, created_by)
            VALUES ${placeholders}`,
           docValues
         );
@@ -210,7 +211,7 @@ const PBC = {
   // Get evidence documents by evidence_id (excludes policy documents by default)
   getEvidenceDocuments: async (evidenceId, tenantId, includePolicy = false) => {
     let query = `
-      SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document
+      SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document, sample_name
       FROM evidence_documents
       WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL
     `;
@@ -219,7 +220,7 @@ const PBC = {
       query += ' AND (is_policy_document = 0 OR is_policy_document IS NULL)';
     }
     
-    query += ' ORDER BY created_date DESC, created_at DESC';
+    query += ' ORDER BY sample_name, created_date DESC, created_at DESC';
     
     const [rows] = await db.query(query, [evidenceId, tenantId]);
     return rows;
@@ -228,11 +229,11 @@ const PBC = {
   // Get only policy documents by evidence_id
   getPolicyDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document
+      `SELECT document_id, artifact_url, document_name, created_date, created_at, is_policy_document, sample_name
        FROM evidence_documents
        WHERE evidence_id = ? AND tenant_id = ? AND deleted_at IS NULL 
          AND is_policy_document = 1
-       ORDER BY created_date DESC, created_at DESC`,
+       ORDER BY sample_name, created_date DESC, created_at DESC`,
       [evidenceId, tenantId]
     );
     return rows;

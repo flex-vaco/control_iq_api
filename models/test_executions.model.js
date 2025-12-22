@@ -38,7 +38,7 @@ const TestExecution = {
   // Get evidence documents by evidence_id with evidence_name (excludes policy documents)
   getEvidenceDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document
+      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document, ed.sample_name
        FROM evidence_documents ed
        JOIN evidences e ON ed.evidence_id = e.evidence_id
        WHERE ed.evidence_id = ? AND ed.tenant_id = ? AND ed.deleted_at IS NULL
@@ -52,7 +52,7 @@ const TestExecution = {
   // Get only policy documents by evidence_id
   getPolicyDocuments: async (evidenceId, tenantId) => {
     const [rows] = await db.query(
-      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document
+      `SELECT ed.document_id, ed.artifact_url, ed.created_date, e.evidence_name, ed.evidence_ai_details, ed.document_name, ed.is_policy_document, ed.sample_name
        FROM evidence_documents ed
        JOIN evidences e ON ed.evidence_id = e.evidence_id
        WHERE ed.evidence_id = ? AND ed.tenant_id = ? AND ed.deleted_at IS NULL
