@@ -2495,7 +2495,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
 // POST evaluate all evidences for a test execution
 exports.evaluateAllEvidences = async (req, res) => {
   try {
-    const { test_execution_id, rcm_id, client_id } = req.body;
+    const { test_execution_id, rcm_id, client_id, sample_name } = req.body;
     const tenantId = req.user.tenantId;
     const userId = req.user.userId;
 
@@ -2517,7 +2517,11 @@ exports.evaluateAllEvidences = async (req, res) => {
       return res.status(404).json({ message: 'Test execution not found.' });
     }
 
+    // Normalize sample_name (use 'No Sample' for null/empty)
+    const normalizedSampleName = sample_name || 'No Sample';
+
     // Check if overall_execution_result already exists in database
+    let existingResultsBySample = {};
     if (testExecution.overall_execution_result) {
       try {
         // Parse the existing result from database
@@ -2528,11 +2532,25 @@ exports.evaluateAllEvidences = async (req, res) => {
           parsedResult = testExecution.overall_execution_result;
         }
 
-        // Return the existing result in desired format
-        return res.json({
-          message: 'Overall execution results retrieved successfully from database.',
-          results: parsedResult
-        });
+        // Check if it's the old format (single result) or new format (sample-based)
+        if (parsedResult && typeof parsedResult === 'object' && !Array.isArray(parsedResult)) {
+          // Check if it has sample_name keys (new format) or is old format
+          if (parsedResult.attribute_results || parsedResult.evidence_results) {
+            // Old format - convert to sample-based format
+            existingResultsBySample = { [normalizedSampleName]: parsedResult };
+          } else {
+            // New format - already sample-based
+            existingResultsBySample = parsedResult;
+          }
+        }
+
+        // If we have results for this sample, return them
+        if (existingResultsBySample[normalizedSampleName]) {
+          return res.json({
+            message: 'Overall execution results retrieved successfully from database.',
+            results: existingResultsBySample[normalizedSampleName]
+          });
+        }
       } catch (parseError) {
         console.error('Error parsing existing overall_execution_result:', parseError);
         // If parsing fails, continue with AI evaluation
@@ -2547,12 +2565,20 @@ exports.evaluateAllEvidences = async (req, res) => {
     }
 
     // Get all evidence documents for this test execution
-    const evidenceDocuments = testExecution.pcb_id 
+    let evidenceDocuments = testExecution.pcb_id 
       ? await TestExecution.getEvidenceDocuments(testExecution.pcb_id, tenantId)
       : [];
 
+    // Filter by sample_name (normalizedSampleName is always set, either from sample_name or 'No Sample')
+    evidenceDocuments = evidenceDocuments.filter(doc => {
+      const docSampleName = doc.sample_name || 'No Sample';
+      return docSampleName === normalizedSampleName;
+    });
+
     if (evidenceDocuments.length === 0) {
-      return res.status(404).json({ message: 'No evidence documents found for this test execution.' });
+      return res.status(404).json({ 
+        message: `No evidence documents found for sample "${normalizedSampleName}".` 
+      });
     }
 
     // Get test attributes
@@ -2778,12 +2804,14 @@ exports.evaluateAllEvidences = async (req, res) => {
       final_result: totalAttributesFailed === 0
     };
 
-    // Save overall result to test_executions table
-    const overallResultJson = JSON.stringify(overallResult);
+    // Save overall result to test_executions table (sample-based structure)
+    // Merge with existing results from other samples
+    existingResultsBySample[normalizedSampleName] = overallResult;
+    const overallResultJson = JSON.stringify(existingResultsBySample);
     await TestExecution.updateOverallExecutionResult(test_execution_id, overallResultJson, tenantId, userId);
 
     res.json({
-      message: 'All evidences evaluated successfully.',
+      message: `All evidences evaluated successfully for sample "${normalizedSampleName}".`,
       results: overallResult
     });
 
