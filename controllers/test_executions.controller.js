@@ -1457,173 +1457,27 @@ async function extractWordStructuredContent(filePath) {
   return structure;
 }
 
-// Upload file to Gemini (reuse from Excel extraction)
-async function uploadWordFileToGemini(apiKey, buffer, filename, mimeType) {
-  const rateLimiter = new RateLimiter(10);
-  await rateLimiter.waitIfNeeded();
-  
-  const formData = new FormData();
-  formData.append('file', buffer, {
-    filename,
-    contentType: mimeType
-  });
-  
-  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
-  const url = `${geminiFilesEndpoint}?key=${apiKey}`;
-  
-  try {
-    const response = await axios.post(url, formData, {
-      headers: formData.getHeaders(),
-      timeout: 60000,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
-    
-    if (response.status !== 200) {
-      throw new Error(`Upload failed (${response.status}): ${JSON.stringify(response.data)}`);
-    }
-    
-    const result = response.data;
-    
-    // Wait for file to be processed
-    let fileInfo = result.file;
-    while (fileInfo.state === 'PROCESSING') {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const checkUrl = `${geminiFilesEndpoint}/${fileInfo.name.split('/').pop()}?key=${apiKey}`;
-      const checkResponse = await axios.get(checkUrl, { timeout: 10000 });
-      fileInfo = checkResponse.data;
-    }
-    
-    if (fileInfo.state === 'FAILED') {
-      throw new Error(`File processing failed: ${fileInfo.error?.message || 'Unknown error'}`);
-    }
-    
-    return {
-      uri: fileInfo.uri,
-      name: fileInfo.name,
-      mimeType: fileInfo.mimeType
-    };
-    
-  } catch (error) {
-    throw new Error(`Upload to Gemini failed: ${error.message}`);
-  }
-}
+// REMOVED: uploadWordFileToGemini and callGeminiForWordImage - no longer needed, using inline base64
 
-// Call Gemini API for image analysis (reuse from Excel extraction)
-async function callGeminiForWordImage(apiKey, prompt, fileUris = []) {
-  const rateLimiter = new RateLimiter(10);
-  await rateLimiter.waitIfNeeded();
-  
-  const contents = [{
-    role: 'user',
-    parts: [
-      { text: prompt },
-      ...fileUris.map(uri => ({
-        fileData: {
-          mimeType: uri.mimeType || 'image/jpeg',
-          fileUri: uri.uri
-        }
-      }))
-    ]
-  }];
-  
-  const geminiModel = 'gemini-2.5-flash-image';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
-  
-  const payload = {
-    contents,
-    generationConfig: {
-      temperature: 0.1,
-      topK: 32,
-      topP: 1,
-      maxOutputTokens: 8192
-    }
-  };
-  
-  try {
-    const response = await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 120000
-    });
-    
-    if (response.status !== 200) {
-      throw new Error(`Gemini API error (${response.status}): ${JSON.stringify(response.data)}`);
-    }
-    
-    const result = response.data;
-    
-    if (!result.candidates || result.candidates.length === 0) {
-      throw new Error('No response from Gemini');
-    }
-    
-    const text = result.candidates[0].content.parts[0].text;
-    
-    return text;
-    
-  } catch (error) {
-    throw new Error(`Gemini API call failed: ${error.message}`);
-  }
-}
-
-// Extract content from image
+// Extract content from image using inline base64 (no file upload needed)
 async function extractWordImageContent(apiKey, imageInfo) {
   try {
     console.log(`Analyzing image: ${imageInfo.id}`);
     
-    const prompt = `Analyze this image from a Word document and extract ALL visible content in a structured format.
-
-IMPORTANT: Return ONLY valid JSON, no markdown formatting, no code blocks.
-
-Extract:
-1. All visible text (headers, labels, data, numbers, captions)
-2. Any tables with their structure (rows, columns, headers, values)
-3. Charts/graphs with their data points and labels
-4. Diagrams or flowcharts with their components
-5. Any other structured data visible in the image
-
-Return the data in this exact JSON format:
-{
-  "text_content": "All raw text found in the image",
-  "structured_data": {
-    "tables": [
-      {
-        "name": "table name or description",
-        "headers": ["column1", "column2", ...],
-        "rows": [
-          ["value1", "value2", ...],
-          ...
-        ]
-      }
-    ],
-    "key_value_pairs": [
-      {"key": "label", "value": "data"}
-    ],
-    "charts": [
-      {
-        "type": "chart type",
-        "title": "chart title",
-        "data": "description of data shown"
-      }
-    ],
-    "diagrams": [
-      {
-        "type": "diagram type",
-        "description": "what the diagram shows"
-      }
-    ]
-  },
-  "summary": "Brief description of what this image contains"
-}`;
-
-    const responseText = await callGeminiForWordImage(apiKey, prompt, [imageInfo]);
+    // Validate buffer exists
+    if (!imageInfo.buffer || !Buffer.isBuffer(imageInfo.buffer)) {
+      throw new Error(`Image ${imageInfo.id} has no valid buffer`);
+    }
     
-    // Clean up response (remove markdown code blocks if present)
-    let cleanedText = responseText.trim();
-    cleanedText = cleanedText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const mimeType = imageInfo.extension === 'png' ? 'image/png' : 
+                    imageInfo.extension === 'jpg' || imageInfo.extension === 'jpeg' ? 'image/jpeg' :
+                    imageInfo.extension === 'gif' ? 'image/gif' :
+                    imageInfo.extension === 'bmp' ? 'image/bmp' :
+                    'image/png';
     
-    const extractedData = JSON.parse(cleanedText);
+    const extractedData = await analyzeImageWithInlineData(apiKey, imageInfo.buffer, mimeType, imageInfo.id);
     
-    console.log(`Extracted data from ${imageInfo.id}`);
+    console.log(`Extracted data from ${imageInfo.id} using inline data`);
     
     return {
       id: imageInfo.id,
@@ -1642,26 +1496,6 @@ Return the data in this exact JSON format:
   }
 }
 
-// Cleanup uploaded files from Gemini
-async function cleanupWordUploadedFiles(apiKey, uploadedImages) {
-  console.log('Cleaning up uploaded files from Gemini');
-  
-  let deletedCount = 0;
-  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
-  
-  for (const img of uploadedImages) {
-    try {
-      const fileId = img.uri.split('/').pop();
-      const url = `${geminiFilesEndpoint}/${fileId}?key=${apiKey}`;
-      await axios.delete(url, { timeout: 10000 });
-      deletedCount++;
-    } catch (error) {
-      // Ignore cleanup errors
-    }
-  }
-  
-  console.log(`Deleted ${deletedCount}/${uploadedImages.length} uploaded files`);
-}
 
 /**
  * Extract text from Word document (doc, docx) with image analysis
@@ -1719,49 +1553,12 @@ async function extractTextFromWord(apiKey, wordPath) {
     //metadata.images = await extractWordImages(fullPath);
     console.log(`Extracted ${metadata.images.length} images`);
     
-    // Upload and analyze images
-    const uploadedImages = [];
-    
+    // Analyze images directly using inline base64 (no upload needed)
     if (metadata.images.length > 0) {
-      console.log(`Uploading ${metadata.images.length} images to Gemini...`);
-      
-      for (const img of metadata.images) {
-        try {
-          const mimeType = img.extension === 'png' ? 'image/png' : 
-                          img.extension === 'jpg' || img.extension === 'jpeg' ? 'image/jpeg' :
-                          img.extension === 'gif' ? 'image/gif' :
-                          img.extension === 'bmp' ? 'image/bmp' :
-                          'image/png';
-          
-          const filename = `${img.id}.${img.extension}`;
-          
-          console.log(`Uploading ${filename}...`);
-          
-          const uploadResult = await uploadWordFileToGemini(apiKey, img.buffer, filename, mimeType);
-          
-          uploadedImages.push({
-            id: img.id,
-            filename: img.filename,
-            uri: uploadResult.uri,
-            mimeType: uploadResult.mimeType,
-            size: img.size
-          });
-          
-          console.log(`Uploaded ${filename}`);
-          
-        } catch (error) {
-          console.error(`Failed to upload ${img.id}: ${error.message}`);
-        }
-      }
-      
-      console.log(`Total images uploaded: ${uploadedImages.length}`);
-      
-      // Analyze images
-      if (uploadedImages.length > 0) {
-        console.log(`Analyzing ${uploadedImages.length} images...`);
+      console.log(`Analyzing ${metadata.images.length} images using inline base64...`);
         
         const imageAnalysis = await processBatch(
-          uploadedImages,
+        metadata.images,
           (img) => extractWordImageContent(apiKey, img),
           3 // batch size
         );
@@ -1783,11 +1580,7 @@ async function extractTextFromWord(apiKey, wordPath) {
         }
         
         const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
-        console.log(`Successfully analyzed ${successCount}/${uploadedImages.length} images`);
-        
-        // Cleanup uploaded files
-        await cleanupWordUploadedFiles(apiKey, uploadedImages);
-      }
+      console.log(`Successfully analyzed ${successCount}/${metadata.images.length} images`);
     } else {
       // Remove buffers even if no images
       for (const img of metadata.images) {
@@ -1927,7 +1720,7 @@ function extractCellStyle(cell) {
   return Object.keys(style).length > 0 ? style : null;
 }
 
-function extractSheetData(worksheet, sheetName) {
+function extractSheetData(worksheet, sheetName, zipImages = []) {
   console.log(`Processing sheet: ${sheetName}`);
   
   const data = {
@@ -1984,36 +1777,107 @@ function extractSheetData(worksheet, sheetName) {
   if (worksheet._media && worksheet._media.length > 0) {
     worksheet._media.forEach((media, idx) => {
       try {
+        // Try to get buffer from different possible locations
+        let buffer = null;
+        if (media.buffer) {
+          buffer = media.buffer;
+        } else if (media.image && media.image.buffer) {
+          buffer = media.image.buffer;
+        } else if (media.image && Buffer.isBuffer(media.image)) {
+          buffer = media.image;
+        } else if (media.data && Buffer.isBuffer(media.data)) {
+          buffer = media.data;
+        }
+        
+        // If no buffer found in media object, try to get from zip images
+        if (!buffer && zipImages && zipImages.length > idx) {
+          buffer = zipImages[idx].buffer;
+          console.log(`Using buffer from zip image ${idx} for media ${idx}`);
+        } else if (!buffer && zipImages && zipImages.length > 0) {
+          // Try to match by index (fallback to first available)
+          buffer = zipImages[Math.min(idx, zipImages.length - 1)].buffer;
+          console.log(`Using fallback zip image buffer for media ${idx}`);
+        }
+        
+        // Determine extension from type or name
+        let extension = 'png'; // default
+        if (media.extension) {
+          extension = media.extension;
+        } else if (media.type) {
+          // Map MIME type to extension
+          const typeMap = {
+            'image/png': 'png',
+            'image/jpeg': 'jpg',
+            'image/jpg': 'jpg',
+            'image/gif': 'gif',
+            'image/bmp': 'bmp',
+            'image/webp': 'webp'
+          };
+          extension = typeMap[media.type] || 'png';
+        } else if (media.name) {
+          // Extract extension from filename
+          const match = media.name.match(/\.([^.]+)$/);
+          if (match) {
+            extension = match[1].toLowerCase();
+          }
+        } else if (zipImages && zipImages.length > idx && zipImages[idx].extension) {
+          // Use extension from zip image
+          extension = zipImages[idx].extension;
+        }
+        
+        // Only add image if we have a valid buffer
+        if (buffer && Buffer.isBuffer(buffer)) {
         const imageData = {
           id: `${sheetName}_img_${idx}`,
           sheetName: sheetName,
-          type: media.type,
-          extension: media.extension,
+            type: media.type || `image/${extension}`,
+            extension: extension,
           position: {
             from: {
-              col: media.range.tl.nativeCol,
-              row: media.range.tl.nativeRow,
-              colOff: media.range.tl.nativeColOff,
-              rowOff: media.range.tl.nativeRowOff
+                col: media.range?.tl?.nativeCol || 0,
+                row: media.range?.tl?.nativeRow || 0,
+                colOff: media.range?.tl?.nativeColOff || 0,
+                rowOff: media.range?.tl?.nativeRowOff || 0
             },
             to: {
-              col: media.range.br.nativeCol,
-              row: media.range.br.nativeRow,
-              colOff: media.range.br.nativeColOff,
-              rowOff: media.range.br.nativeRowOff
-            }
-          },
-          buffer: media.buffer, // Keep buffer for upload
-          size: media.buffer ? media.buffer.length : 0
+                col: media.range?.br?.nativeCol || 0,
+                row: media.range?.br?.nativeRow || 0,
+                colOff: media.range?.br?.nativeColOff || 0,
+                rowOff: media.range?.br?.nativeRowOff || 0
+              }
+            },
+            buffer: buffer, // Keep buffer for upload
+            size: buffer.length
         };
         
         data.images.push(imageData);
+        } else {
+          console.warn(`Image ${idx} in sheet "${sheetName}" has no valid buffer. Available properties: ${Object.keys(media).join(', ')}`);
+        }
       } catch (error) {
         console.warn(`Failed to extract image ${idx}: ${error.message}`);
+        console.warn(`Error stack: ${error.stack}`);
       }
     });
     
-    console.log(`Extracted ${data.images.length} images`);
+    console.log(`Extracted ${data.images.length} images from sheet "${sheetName}"`);
+  } else if (zipImages && zipImages.length > 0) {
+    // If no media objects but we have zip images, use them
+    console.log(`No media objects found, using ${zipImages.length} images from zip file`);
+    zipImages.forEach((zipImg, idx) => {
+      data.images.push({
+        id: `${sheetName}_img_${idx}`,
+        sheetName: sheetName,
+        type: `image/${zipImg.extension}`,
+        extension: zipImg.extension,
+        position: {
+          from: { col: 0, row: 0, colOff: 0, rowOff: 0 },
+          to: { col: 0, row: 0, colOff: 0, rowOff: 0 }
+        },
+        buffer: zipImg.buffer,
+        size: zipImg.size
+      });
+    });
   }
 
   // Extract data validations
@@ -2129,119 +1993,15 @@ async function processBatch(items, processFn, batchSize) {
   return results;
 }
 
-// Upload file to Gemini
-async function uploadFileToGemini(apiKey, buffer, filename, mimeType) {
-  const rateLimiter = new RateLimiter(10); // 10 requests per minute
-  await rateLimiter.waitIfNeeded();
-  
-  const formData = new FormData();
-  formData.append('file', buffer, {
-    filename,
-    contentType: mimeType
-  });
-  
-  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
-  const url = `${geminiFilesEndpoint}?key=${apiKey}`;
-  
-  try {
-    // Use axios for FormData upload with timeout
-    const response = await axios.post(url, formData, {
-      headers: formData.getHeaders(),
-      timeout: 60000,
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
-    
-    if (response.status !== 200) {
-      throw new Error(`Upload failed (${response.status}): ${JSON.stringify(response.data)}`);
-    }
-    
-    const result = response.data;
-    
-    // Wait for file to be processed
-    let fileInfo = result.file;
-    while (fileInfo.state === 'PROCESSING') {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const checkUrl = `${geminiFilesEndpoint}/${fileInfo.name.split('/').pop()}?key=${apiKey}`;
-      const checkResponse = await axios.get(checkUrl, { timeout: 10000 });
-      fileInfo = checkResponse.data;
-    }
-    
-    if (fileInfo.state === 'FAILED') {
-      throw new Error(`File processing failed: ${fileInfo.error?.message || 'Unknown error'}`);
-    }
-    
-    return {
-      uri: fileInfo.uri,
-      name: fileInfo.name,
-      mimeType: fileInfo.mimeType
-    };
-    
-  } catch (error) {
-    throw new Error(`Upload to Gemini failed: ${error.message}`);
-  }
-}
+// REMOVED: uploadFileToGemini and callGeminiForImage - no longer needed, using inline base64
 
-// Call Gemini API for image analysis
-async function callGeminiForImage(apiKey, prompt, fileUris = []) {
+// Analyze image using inline base64 data (no file upload needed)
+async function analyzeImageWithInlineData(apiKey, buffer, mimeType, imageId) {
   const rateLimiter = new RateLimiter(10);
   await rateLimiter.waitIfNeeded();
   
-  const contents = [{
-    role: 'user',
-        parts: [
-          { text: prompt },
-      ...fileUris.map(uri => ({
-        fileData: {
-          mimeType: uri.mimeType || 'image/jpeg',
-          fileUri: uri.uri
-        }
-      }))
-    ]
-  }];
-  
-  const geminiModel = 'gemini-2.5-flash-image';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
-  
-  const payload = {
-    contents,
-    generationConfig: {
-      temperature: 0.1,
-      topK: 32,
-      topP: 1,
-      maxOutputTokens: 8192
-    }
-  };
-  
-  try {
-    const response = await axios.post(url, payload, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 120000
-    });
-    
-    if (response.status !== 200) {
-      throw new Error(`Gemini API error (${response.status}): ${JSON.stringify(response.data)}`);
-    }
-    
-    const result = response.data;
-    
-    if (!result.candidates || result.candidates.length === 0) {
-      throw new Error('No response from Gemini');
-    }
-    
-    const text = result.candidates[0].content.parts[0].text;
-    
-    return text;
-    
-  } catch (error) {
-    throw new Error(`Gemini API call failed: ${error.message}`);
-  }
-}
-
-// Extract content from image
-async function extractImageContent(apiKey, imageInfo) {
-  try {
-    console.log(`Analyzing image: ${imageInfo.id}`);
+  // Convert buffer to base64
+  const fileBase64 = buffer.toString('base64');
     
     const prompt = `Analyze this image and extract ALL visible content in a structured format.
 
@@ -2281,15 +2041,59 @@ Return the data in this exact JSON format:
   "summary": "Brief description of what this image contains"
 }`;
 
-    const responseText = await callGeminiForImage(apiKey, prompt, [imageInfo]);
+  const requestBody = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        {
+          inline_data: {
+            mime_type: mimeType,
+            data: fileBase64
+          }
+        }
+      ]
+    }]
+  };
+
+  const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
+  
+  try {
+    const response = await axios.post(apiUrl, requestBody, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 60000
+    });
+
+    const data = response.data;
+    let resultText = data.candidates[0].content.parts[0].text;
+    resultText = resultText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
-    // Clean up response (remove markdown code blocks if present)
-    let cleanedText = responseText.trim();
-    cleanedText = cleanedText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const extractedData = JSON.parse(resultText);
+    return extractedData;
+  } catch (error) {
+    const errorData = error.response?.data || {};
+    console.error(`Gemini API Error for ${imageId}:`, errorData);
+    throw new Error(`API Error: ${errorData.error?.message || error.message}`);
+  }
+}
+
+async function extractImageContent(apiKey, imageInfo) {
+  try {
+    console.log(`Analyzing image: ${imageInfo.id}`);
     
-    const extractedData = JSON.parse(cleanedText);
+    // Validate buffer exists
+    if (!imageInfo.buffer || !Buffer.isBuffer(imageInfo.buffer)) {
+      throw new Error(`Image ${imageInfo.id} has no valid buffer`);
+    }
     
-    console.log(`Extracted data from ${imageInfo.id}`);
+    const mimeType = imageInfo.extension === 'png' ? 'image/png' : 
+                    imageInfo.extension === 'jpg' || imageInfo.extension === 'jpeg' ? 'image/jpeg' : 
+                    'image/png';
+    
+    const extractedData = await analyzeImageWithInlineData(apiKey, imageInfo.buffer, mimeType, imageInfo.id);
+    
+    console.log(`Extracted data from ${imageInfo.id} using inline data`);
     
     return {
       id: imageInfo.id,
@@ -2310,26 +2114,6 @@ Return the data in this exact JSON format:
   }
 }
 
-// Cleanup uploaded files from Gemini
-async function cleanupUploadedFiles(apiKey, uploadedImages) {
-  console.log('Cleaning up uploaded files from Gemini');
-  
-  let deletedCount = 0;
-  const geminiFilesEndpoint = 'https://generativelanguage.googleapis.com/v1beta/files';
-  
-  for (const img of uploadedImages) {
-    try {
-      const fileId = img.uri.split('/').pop();
-      const url = `${geminiFilesEndpoint}/${fileId}?key=${apiKey}`;
-      await axios.delete(url, { timeout: 10000 });
-      deletedCount++;
-    } catch (error) {
-      // Ignore cleanup errors
-    }
-  }
-  
-  console.log(`Deleted ${deletedCount}/${uploadedImages.length} uploaded files`);
-}
 
 /**
  * Extract text from Excel document (xls, xlsx) with image analysis
@@ -2337,6 +2121,48 @@ async function cleanupUploadedFiles(apiKey, uploadedImages) {
  * @param {string} excelPath - Path to the Excel document (relative to uploads folder)
  * @returns {Promise<string>} - Extracted text as JSON string
  */
+// Extract images directly from Excel zip file
+async function extractExcelImagesFromZip(filePath) {
+  const images = [];
+  try {
+    const zip = new AdmZip(filePath);
+    const entries = zip.getEntries();
+    
+    // Excel stores images in xl/media/ folder
+    const mediaEntries = entries.filter(entry => 
+      entry.entryName.startsWith('xl/media/') && 
+      !entry.isDirectory
+    );
+    
+    mediaEntries.forEach((entry, idx) => {
+      try {
+        const filename = path.basename(entry.entryName);
+        const ext = path.extname(filename).toLowerCase().slice(1) || 'png';
+        const buffer = entry.getData();
+        
+        if (buffer && buffer.length > 0) {
+          images.push({
+            id: `excel_img_${idx}`,
+            filename: filename,
+            extension: ext,
+            path: entry.entryName,
+            buffer: buffer,
+            size: buffer.length
+          });
+        }
+    } catch (error) {
+        console.warn(`Failed to extract image from zip entry ${entry.entryName}: ${error.message}`);
+      }
+    });
+    
+    console.log(`Extracted ${images.length} images from Excel zip file`);
+  } catch (error) {
+    console.error(`Failed to extract images from Excel zip: ${error.message}`);
+  }
+  
+  return images;
+}
+
 async function extractTextFromExcelWithImages(apiKey, excelPath) {
   try {
     // Construct full file path
@@ -2350,6 +2176,9 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
     }
 
     console.log('Extracting data from Excel file:', fullPath);
+
+    // Extract images from zip file first (as backup)
+    const zipImages = await extractExcelImagesFromZip(fullPath);
 
     // Load Excel workbook
     const workbook = new ExcelJS.Workbook();
@@ -2374,7 +2203,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
     // Extract data from all sheets
     for (const worksheet of workbook.worksheets) {
       try {
-        const sheetData = extractSheetData(worksheet, worksheet.name);
+        const sheetData = extractSheetData(worksheet, worksheet.name, zipImages);
         metadata.sheets.push(sheetData);
       } catch (error) {
         console.error(`Failed to process sheet "${worksheet.name}": ${error.message}`);
@@ -2383,53 +2212,24 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
     
     console.log(`Extracted data from ${metadata.sheets.length} sheets`);
     
-    // Upload and analyze images
+    // Analyze images directly using inline base64 (no upload needed)
     const allImages = [];
-    const uploadedImages = [];
-    
     // Collect all images from all sheets
     for (const sheet of metadata.sheets) {
       if (sheet.images.length > 0) {
-        console.log(`Uploading ${sheet.images.length} images from "${sheet.name}"`);
-        
-        for (const img of sheet.images) {
-          try {
-            const mimeType = img.extension === 'png' ? 'image/png' : 
-                            img.extension === 'jpg' || img.extension === 'jpeg' ? 'image/jpeg' : 
-                            'image/png';
-            
-            const filename = `${img.id}.${img.extension}`;
-            
-            console.log(`Uploading ${filename}...`);
-            
-            const uploadResult = await uploadFileToGemini(apiKey, img.buffer, filename, mimeType);
-            
-            uploadedImages.push({
-              id: img.id,
-              sheetName: img.sheetName,
-              position: img.position,
-              uri: uploadResult.uri,
-              mimeType: uploadResult.mimeType,
-              size: img.size
-            });
-            
-            console.log(`Uploaded ${filename}`);
-            
-          } catch (error) {
-            console.error(`Failed to upload ${img.id}: ${error.message}`);
-          }
-        }
+        console.log(`Found ${sheet.images.length} images in sheet "${sheet.name}"`);
+        allImages.push(...sheet.images);
       }
     }
     
-    console.log(`Total images uploaded: ${uploadedImages.length}`);
+    console.log(`Total images to analyze: ${allImages.length}`);
     
-    // Analyze images
-    if (uploadedImages.length > 0) {
-      console.log(`Analyzing ${uploadedImages.length} images...`);
+    // Analyze images directly using inline data
+    if (allImages.length > 0) {
+      console.log(`Analyzing ${allImages.length} images using inline base64...`);
       
       const imageAnalysis = await processBatch(
-        uploadedImages,
+        allImages,
         (img) => extractImageContent(apiKey, img),
         3 // batch size
       );
@@ -2453,7 +2253,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
       }
       
       const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
-      console.log(`Successfully analyzed ${successCount}/${uploadedImages.length} images`);
+      console.log(`Successfully analyzed ${successCount}/${allImages.length} images`);
     } else {
       // Remove buffers even if no images
       for (const sheet of metadata.sheets) {
@@ -2476,10 +2276,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
       sheetNames: metadata.sheets.map(s => s.name)
     };
     
-    // Cleanup uploaded files
-    if (uploadedImages.length > 0) {
-      await cleanupUploadedFiles(apiKey, uploadedImages);
-    }
+    // No cleanup needed - using inline base64 data instead of file uploads
     
     // Return as JSON string for database storage
     const result = JSON.stringify(metadata);
