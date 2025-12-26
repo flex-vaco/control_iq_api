@@ -200,16 +200,26 @@ exports.createEvidence = (req, res) => {
             : [req.body.is_policy_document])
         : [];
       
+      // Parse sample_names array from request body
+      const sampleNamesArray = req.body.sample_names 
+        ? (Array.isArray(req.body.sample_names) 
+            ? req.body.sample_names 
+            : [req.body.sample_names])
+        : [];
+      
       const documentsData = req.files ? req.files.map((file, index) => {
         // Extract original filename without extension
         const originalName = file.originalname || '';
         const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
         // Get is_policy_document flag for this file (default to false)
         const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
+        // Get sample_name for this file (default to empty string)
+        const sampleName = sampleNamesArray[index] || '';
         return {
           artifact_url: `evidences/${file.filename}`, // Relative path for storage
           document_name: nameWithoutExt || null,
-          is_policy_document: isPolicyDocument
+          is_policy_document: isPolicyDocument,
+          sample_name: sampleName || null
         };
       }) : [];
 
@@ -310,16 +320,26 @@ exports.updateEvidence = (req, res) => {
               : [req.body.is_policy_document])
           : [];
         
+        // Parse sample_names array from request body
+        const sampleNamesArray = req.body.sample_names 
+          ? (Array.isArray(req.body.sample_names) 
+              ? req.body.sample_names 
+              : [req.body.sample_names])
+          : [];
+        
         const documentsData = req.files.map((file, index) => {
           // Extract original filename without extension
           const originalName = file.originalname || '';
           const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
           // Get is_policy_document flag for this file (default to false)
           const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
+          // Get sample_name for this file (default to empty string)
+          const sampleName = sampleNamesArray[index] || '';
           return {
             artifact_url: `evidences/${file.filename}`,
             document_name: nameWithoutExt || null,
-            is_policy_document: isPolicyDocument
+            is_policy_document: isPolicyDocument,
+            sample_name: sampleName || null
           };
         });
         // Add documents to existing evidence
@@ -332,11 +352,12 @@ exports.updateEvidence = (req, res) => {
             doc.document_name,
             doc.artifact_url,
             doc.is_policy_document ? 1 : 0,
+            doc.sample_name || null,
             userId
           ]).flat();
-          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
           await connection.query(
-            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by) VALUES ${placeholders}`,
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, sample_name, created_by) VALUES ${placeholders}`,
             docValues
           );
           
@@ -504,16 +525,27 @@ exports.addEvidenceDocuments = (req, res) => {
               ? req.body.is_policy_document 
               : [req.body.is_policy_document])
           : [];
+        
+        // Parse sample_names array from request body
+        const sampleNamesArray = req.body.sample_names 
+          ? (Array.isArray(req.body.sample_names) 
+              ? req.body.sample_names 
+              : [req.body.sample_names])
+          : [];
+        
         const documentsData = req.files.map((file, index) => {
           // Extract original filename without extension
           const originalName = file.originalname || '';
           const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
           // Get is_policy_document flag for this file (default to false)
           const isPolicyDocument = isPolicyDocumentArray[index] === 'true' || isPolicyDocumentArray[index] === true;
+          // Get sample_name for this file (default to empty string)
+          const sampleName = sampleNamesArray[index] || '';
           return {
             artifact_url: `evidences/${file.filename}`,
             document_name: nameWithoutExt || null,
-            is_policy_document: isPolicyDocument
+            is_policy_document: isPolicyDocument,
+            sample_name: sampleName || null
           };
         });
         
@@ -528,11 +560,12 @@ exports.addEvidenceDocuments = (req, res) => {
             doc.document_name,
             doc.artifact_url,
             doc.is_policy_document ? 1 : 0,
+            doc.sample_name || null,
             userId
           ]).flat();
-          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+          const placeholders = documentsData.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
           await connection.query(
-            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, created_by) VALUES ${placeholders}`,
+            `INSERT INTO evidence_documents (evidence_id, tenant_id, client_id, document_name, artifact_url, is_policy_document, sample_name, created_by) VALUES ${placeholders}`,
             docValues
           );
           await connection.commit();
