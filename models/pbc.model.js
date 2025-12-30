@@ -249,6 +249,17 @@ const PBC = {
     );
     return result.affectedRows > 0;
   },
+
+  // Delete all documents by sample_name (soft delete)
+  deleteSampleDocuments: async (evidenceId, sampleName, tenantId, userId) => {
+    const [result] = await db.query(
+      `UPDATE evidence_documents 
+       SET deleted_at = NOW(), deleted_by = ?
+       WHERE evidence_id = ? AND sample_name = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [userId, evidenceId, sampleName, tenantId]
+    );
+    return result.affectedRows > 0;
+  },
 };
 
 module.exports = PBC;

@@ -657,3 +657,36 @@ exports.deleteEvidenceDocument = async (req, res) => {
   }
 };
 
+// DELETE sample by sample_name (soft delete all documents with that sample_name)
+exports.deleteSample = async (req, res) => {
+  try {
+    const evidenceId = req.params.id;
+    const sampleName = req.query.sample_name;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!evidenceId) {
+      return res.status(400).json({ message: 'Evidence ID is required.' });
+    }
+
+    if (!sampleName) {
+      return res.status(400).json({ message: 'Sample name is required.' });
+    }
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    const deleted = await PBC.deleteSampleDocuments(evidenceId, sampleName, tenantId, userId);
+    
+    if (!deleted) {
+      return res.status(404).json({ message: 'Sample not found or already deleted.' });
+    }
+
+    res.json({ message: 'Sample and all its documents deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting sample:', error);
+    res.status(500).json({ message: 'Server error during sample deletion.' });
+  }
+};
+
