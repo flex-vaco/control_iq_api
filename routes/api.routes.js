@@ -30,6 +30,7 @@ router.get('/pbc/:id/documents', verifyToken, pbcController.getEvidenceDocuments
 router.get('/pbc/:id/policy-documents', verifyToken, pbcController.getPolicyDocuments); // Get policy documents only
 router.post('/pbc/:id/add-documents', verifyToken, pbcController.addEvidenceDocuments); // Add documents to existing evidence
 router.delete('/pbc/documents/:documentId', verifyToken, pbcController.deleteEvidenceDocument); // Delete evidence document
+router.delete('/pbc/:id/sample', verifyToken, pbcController.deleteSample); // Delete sample by sample_name
 router.get('/rcm-controls', verifyToken, pbcController.getAvailableRcmControls); // Fetch RCM data for PBC creation
 router.get('/pbc/check-duplicate', verifyToken, pbcController.checkDuplicatePbc); // Check for duplicate PBC
 
