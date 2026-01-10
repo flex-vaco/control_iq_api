@@ -1098,8 +1098,12 @@ exports.updateTestExecutionEvidenceResult = async (req, res) => {
           const oldValue = oldAttr.attribute_final_result !== undefined ? oldAttr.attribute_final_result : oldAttr.result;
           const newValue = newAttr.attribute_final_result;
           
-          // Check if result changed from pass to fail or fail to pass
-          if (oldValue !== newValue && (oldValue === true || oldValue === false) && (newValue === true || newValue === false)) {
+          // Check if result changed from pass to fail or fail to pass (excluding NA/null)
+          if (oldValue !== newValue && 
+              oldValue !== null && oldValue !== undefined && 
+              newValue !== null && newValue !== undefined &&
+              (oldValue === true || oldValue === false) && 
+              (newValue === true || newValue === false)) {
             // Require comment when changing result
             if (!newAttr.attribute_result_change_comment || newAttr.attribute_result_change_comment.trim() === '') {
               return res.status(400).json({ 

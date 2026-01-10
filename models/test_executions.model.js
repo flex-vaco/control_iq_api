@@ -80,7 +80,7 @@ const TestExecution = {
       `SELECT attribute_id, attribute_name, attribute_description, test_steps
        FROM test_attributes
        WHERE rcm_id = ? AND tenant_id = ? AND deleted_at IS NULL
-       ORDER BY created_at DESC`,
+       ORDER BY created_at ASC`,
       [rcmId, tenantId]
     );
     return rows;
