@@ -193,6 +193,17 @@ const TestExecution = {
       [overallResult, userId, testExecutionId, tenantId]
     );
     return result_query.affectedRows > 0;
+  },
+
+  // Update AI prompt text for a test execution
+  updateAiPromptText: async (testExecutionId, aiPromptText, tenantId, userId) => {
+    const [result_query] = await db.query(
+      `UPDATE test_executions 
+       SET ai_prompt_text = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [aiPromptText, userId, testExecutionId, tenantId]
+    );
+    return result_query.affectedRows > 0;
   }
 };
 

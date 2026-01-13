@@ -14,7 +14,6 @@ const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
-const AiPrompts = require('../models/ai_prompts.model');
 
 // Promisify libreoffice convert
 const libreConvert = promisify(libre.convert);
@@ -532,6 +531,26 @@ exports.compareAttributes = async (req, res) => {
       return res.status(400).json({ message: 'RCM ID is required.' });
     }
 
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    // Get test execution to retrieve the selected prompt
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    // Get the prompt from test_execution, use default if not set
+    let taskPrompt = testExecution.ai_prompt_text;
+    
+    // Default prompt if none found
+    if (!taskPrompt || taskPrompt.trim() === '') {
+      taskPrompt = `- Understand the context and meaning of both evidence and requirements
+- Match based on semantic meaning, not exact text
+- Consider synonyms, equivalent terms, and policy variations`;
+    }
+
     const evidenceDocument = await PBC.findEvidenceDocumentById(evidence_document_id, tenantId);
 
     if (!evidenceDocument) {
@@ -554,7 +573,6 @@ exports.compareAttributes = async (req, res) => {
     if (!testAttributes) {
       return res.status(404).json({ message: 'Test attributes not found.' });
     }
-    console.log(testAttributes);
 
     const attributesList = testAttributes.map((attr) => 
       `{"attribute_name": "${attr.attribute_name}", "attribute_description": "${attr.attribute_description}", "test_steps": "${attr.test_steps}"}`
@@ -569,13 +587,12 @@ exports.compareAttributes = async (req, res) => {
     [${attributesList}]
     
     TASK:
-    - Understand the context and meaning of both evidence and requirements
-    - Match based on semantic meaning, not exact text
-    - Consider synonyms, equivalent terms, and policy variations
+    ${taskPrompt}
     
     Return JSON array with each requirement evaluated:
-    [
+    {
       attributes_results: [
+        {
           "attribute_name": "string",
           "attribute_description": "string", 
           "test_steps": "string",
@@ -1221,6 +1238,63 @@ exports.updateTestExecutionStatusAndResult = async (req, res) => {
     res.json({ message: 'Test execution status and result updated successfully.' });
   } catch (error) {
     console.error('Error updating test execution status and result:', error);
+    res.status(500).json({ message: 'Server error.' });
+  }
+};
+
+// PUT update AI prompt text for a test execution and clear existing test results
+exports.updateTestExecutionPrompt = async (req, res) => {
+  try {
+    const { test_execution_id, ai_prompt_text } = req.body;
+    const tenantId = req.user.tenantId;
+    const userId = req.user.userId;
+
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant ID is required.' });
+    }
+
+    if (!test_execution_id) {
+      return res.status(400).json({ message: 'Test execution ID is required.' });
+    }
+
+    // Get test execution
+    const testExecution = await TestExecution.findById(test_execution_id, tenantId);
+    if (!testExecution) {
+      return res.status(404).json({ message: 'Test execution not found.' });
+    }
+
+    // Normalize prompt text (null or empty string becomes null)
+    const normalizedPromptText = ai_prompt_text && ai_prompt_text.trim() !== '' ? ai_prompt_text.trim() : null;
+
+    // Check if prompt is being changed
+    const currentPromptText = testExecution.ai_prompt_text || null;
+    const isPromptChanging = currentPromptText !== normalizedPromptText;
+
+    // If prompt is changing and test execution has results, clear them
+    let resultsCleared = false;
+    if (isPromptChanging) {
+      // Check if there are any test results
+      const existingResults = await TestExecutionEvidenceDocuments.findByTestExecutionId(test_execution_id, tenantId);
+      if (existingResults && existingResults.length > 0) {
+        // Delete all test results
+        await TestExecutionEvidenceDocuments.deleteAllByTestExecutionId(test_execution_id, tenantId, userId);
+        resultsCleared = true;
+      }
+    }
+
+    // Update the prompt text
+    const updated = await TestExecution.updateAiPromptText(test_execution_id, normalizedPromptText, tenantId, userId);
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Failed to update prompt.' });
+    }
+
+    res.json({ 
+      message: 'Prompt updated successfully.',
+      results_cleared: resultsCleared
+    });
+  } catch (error) {
+    console.error('Error updating test execution prompt:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -2434,9 +2508,11 @@ exports.evaluateAllEvidences = async (req, res) => {
           `{"attribute_name": "${attr.attribute_name}", "attribute_description": "${attr.attribute_description}", "test_steps": "${attr.test_steps}"}`
         ).join(',\n');
 
-        let taskPrompt = await AiPrompts.getPromptByHierarchy(rcm_id, finalClientId, tenantId);
+        // Get the prompt from test_execution, use default if not set
+        let taskPrompt = testExecution.ai_prompt_text;
         
-        if (!taskPrompt) {
+        // Default prompt if none found
+        if (!taskPrompt || taskPrompt.trim() === '') {
           taskPrompt = `- Understand the context and meaning of both evidence and requirements
 - Match based on semantic meaning, not exact text
 - Consider synonyms, equivalent terms, and policy variations`;
