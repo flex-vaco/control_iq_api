@@ -80,7 +80,7 @@ const TestExecution = {
       `SELECT attribute_id, attribute_name, attribute_description, test_steps
        FROM test_attributes
        WHERE rcm_id = ? AND tenant_id = ? AND deleted_at IS NULL
-       ORDER BY created_at DESC`,
+       ORDER BY created_at ASC`,
       [rcmId, tenantId]
     );
     return rows;
@@ -191,6 +191,17 @@ const TestExecution = {
        SET overall_execution_result = ?, updated_at = NOW(), updated_by = ?
        WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
       [overallResult, userId, testExecutionId, tenantId]
+    );
+    return result_query.affectedRows > 0;
+  },
+
+  // Update AI prompt text for a test execution
+  updateAiPromptText: async (testExecutionId, aiPromptText, tenantId, userId) => {
+    const [result_query] = await db.query(
+      `UPDATE test_executions 
+       SET ai_prompt_text = ?, updated_at = NOW(), updated_by = ?
+       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [aiPromptText, userId, testExecutionId, tenantId]
     );
     return result_query.affectedRows > 0;
   }

@@ -68,6 +68,17 @@ const TestExecutionEvidenceDocuments = {
       [JSON.stringify(updatedResult), statusValue, userId, testExecutionId, evidenceDocumentId, tenantId]
     );
     return result.affectedRows > 0;
+  },
+
+  // Delete all test results for a test execution (soft delete)
+  deleteAllByTestExecutionId: async (testExecutionId, tenantId, userId) => {
+    const [result] = await db.query(
+      `UPDATE test_execution_evidence_documents 
+       SET deleted_at = NOW(), deleted_by = ?
+       WHERE test_execution_id = ? AND tenant_id = ? AND deleted_at IS NULL`,
+      [userId, testExecutionId, tenantId]
+    );
+    return result.affectedRows;
   }
 };
 
