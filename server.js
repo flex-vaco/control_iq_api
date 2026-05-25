@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const path = require('path');
 const apiRoutes = require('./routes/api.routes');
@@ -31,10 +33,28 @@ const corsOptions = {
   maxAge: 86400 // 24 hours
 };
 
+// Rate limiters
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many login attempts. Please try again after 15 minutes.' }
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many requests. Please slow down.' }
+});
+
 // Middleware
-app.use(cors(corsOptions)); // Allow cross-origin requests with proper configuration
-app.use(express.json({ limit: '50mb' })); // Parse JSON request bodies with increased limit for large imports
-app.use(express.urlencoded({ limit: '50mb', extended: true })); // Support URL-encoded bodies
+app.use(helmet());
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Handle preflight requests explicitly
 app.options('*', cors(corsOptions));
@@ -56,11 +76,8 @@ app.get('/api/health', (req, res) => {
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // --- Routes ---
-// Authentication routes (e.g., /api/auth/login)
-app.use('/api/auth', authRoutes);
-
-// Main API data routes (e.g., /api/data/rcm)
-app.use('/api/data', apiRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/data', apiLimiter, apiRoutes);
 
 // --- Server Startup ---
 app.listen(PORT, () => {
