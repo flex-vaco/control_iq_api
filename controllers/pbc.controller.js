@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { extractEvidenceAIDetails } = require('./test_executions.controller');
+const { sanitizeFilename, validateMagicBytes } = require('../utils/file.helper');
 
 // --- Multer Configuration for MULTIPLE Document Upload ---
 const storage = multer.diskStorage({
@@ -16,14 +17,33 @@ const storage = multer.diskStorage({
     cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
-    // Unique filename: timestamp-originalfilename.ext
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+    cb(null, uniqueSuffix + '-' + sanitizeFilename(file.originalname));
   }
 });
 
-// Configure for multiple files, named 'documents'
-const upload = multer({ storage: storage }).array('documents');
+const PBC_ALLOWED_MIMES = new Set([
+  'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+]);
+const PBC_ALLOWED_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx']);
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).slice(1).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (PBC_ALLOWED_MIMES.has(file.mimetype) && PBC_ALLOWED_EXTS.has(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only images, PDFs, and office documents are allowed.'), false);
+    }
+  }
+}).array('documents');
 // ---------------------------------------------------
 
 
@@ -127,13 +147,21 @@ exports.createEvidence = (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
       console.error('Multer file upload error:', err);
-      // Handle file size or other multer errors
       if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ message: 'File upload error: ' + err.message });
       }
       return res.status(500).json({ message: 'File upload failed.' });
     }
-    
+
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        if (!await validateMagicBytes(file.path, file.mimetype)) {
+          req.files.forEach(f => fs.unlink(f.path, () => {}));
+          return res.status(400).json({ message: 'File content does not match its declared type.' });
+        }
+      }
+    }
+
     // req.body contains form fields, req.files contains file array
     const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
     const clientId = client_id;
@@ -280,7 +308,16 @@ exports.updateEvidence = (req, res) => {
     if (err) {
       return res.status(500).json({ message: 'File upload error: ' + err.message });
     }
-    
+
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        if (!await validateMagicBytes(file.path, file.mimetype)) {
+          req.files.forEach(f => fs.unlink(f.path, () => {}));
+          return res.status(400).json({ message: 'File content does not match its declared type.' });
+        }
+      }
+    }
+
     try {
       const evidenceId = req.params.id;
       const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
@@ -479,7 +516,16 @@ exports.addEvidenceDocuments = (req, res) => {
       }
       return res.status(500).json({ message: 'File upload failed.' });
     }
-    
+
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        if (!await validateMagicBytes(file.path, file.mimetype)) {
+          req.files.forEach(f => fs.unlink(f.path, () => {}));
+          return res.status(400).json({ message: 'File content does not match its declared type.' });
+        }
+      }
+    }
+
     try {
       const evidenceId = req.params.id;
       const tenantId = req.user.tenantId;

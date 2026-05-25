@@ -14,6 +14,15 @@ const TestExecution = require('../models/test_executions.model');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const TestExecutionEvidenceDocuments = require('../models/test_execution_evidence_documents.model');
+const { sanitizeExtension, sanitizeSegment, validateMagicBytes } = require('../utils/file.helper');
+
+const MIME_TO_EXT = {
+  'application/pdf': 'pdf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx'
+};
 
 // Promisify libreoffice convert
 const libreConvert = promisify(libre.convert);
@@ -26,12 +35,9 @@ const executionEvidenceStorage = multer.diskStorage({
     cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
-    // Generate temporary filename - we'll rename it after we get control_id from body
     const timestamp = Date.now();
     const randomSuffix = Math.round(Math.random() * 1E9);
-    // Preserve original file extension
-    const originalExt = file.originalname.split('.').pop() || 
-                       (file.mimetype === 'application/pdf' ? 'pdf' : 'png');
+    const originalExt = sanitizeExtension(file.originalname) || MIME_TO_EXT[file.mimetype] || 'png';
     const tempFilename = `temp-${timestamp}-${randomSuffix}.${originalExt}`;
     cb(null, tempFilename);
   }
@@ -845,9 +851,15 @@ exports.saveAnnotatedImage = (req, res) => {
         return res.status(400).json({ message: 'No file provided.' });
       }
 
+      // Validate magic bytes against declared MIME type before any further processing
+      if (!await validateMagicBytes(req.file.path, req.file.mimetype)) {
+        fsSync.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: 'File content does not match its declared type.' });
+      }
+
       // Detect file type from mimetype or extension
       const fileMimeType = req.file.mimetype;
-      let fileExtension = req.file.originalname.toLowerCase().split('.').pop();
+      let fileExtension = sanitizeExtension(req.file.originalname);
       
       // If extension not found, try to infer from mime type
       if (!fileExtension) {
@@ -899,7 +911,8 @@ exports.saveAnnotatedImage = (req, res) => {
 
       // Rename the file with proper control_id and correct extension
       const timestamp = Date.now();
-      const finalFilename = `${String(finalControlId).trim()}-${timestamp}.${fileExtension}`;
+      const safeControlId = sanitizeSegment(finalControlId);
+      const finalFilename = `${safeControlId}-${timestamp}.${fileExtension}`;
       const finalPath = path.join(path.dirname(req.file.path), finalFilename);
       
       try {
