@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 const path = require('path');
 const apiRoutes = require('./routes/api.routes');
 const authRoutes = require('./routes/auth.routes');
@@ -47,6 +48,7 @@ const apiLimiter = rateLimit({
 
 app.use(helmet());
 app.use(cors(corsOptions));
+app.use(cookieParser());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.options('*', cors(corsOptions));

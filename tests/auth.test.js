@@ -1,13 +1,11 @@
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-jwt-secret';
 
-// Mock DB before any module that transitively requires it
 jest.mock('../config/db', () => ({
   query: jest.fn(),
   getConnection: jest.fn().mockResolvedValue({ release: jest.fn() })
 }));
 
-// Mock the User model — auth controller only touches this
 jest.mock('../models/user.model');
 
 const request = require('supertest');
@@ -25,6 +23,8 @@ const activeUser = {
   tenant_id: 2,
   role_id: 2
 };
+
+// ─── POST /api/auth/login ─────────────────────────────────────────────────────
 
 describe('POST /api/auth/login', () => {
   afterEach(() => jest.clearAllMocks());
@@ -62,13 +62,18 @@ describe('POST /api/auth/login', () => {
     expect(res.body.message).toBe('Invalid credentials.');
   });
 
-  test('returns 200 with Bearer token on valid credentials', async () => {
+  test('returns 200, sets httpOnly cookie, returns user payload (no token in body)', async () => {
     User.findByEmail.mockResolvedValue(activeUser);
     const res = await request(app).post('/api/auth/login').send({ email: 'admin@acme.com', password: 'Admin@123' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.token).toMatch(/^Bearer /);
+    expect(res.body.token).toBeUndefined(); // token must NOT be in response body
     expect(res.body.user).toMatchObject({ email: 'admin@acme.com', tenantId: 2 });
+    // Cookie should be set and marked httpOnly
+    const setCookieHeader = res.headers['set-cookie'];
+    expect(setCookieHeader).toBeDefined();
+    expect(setCookieHeader[0]).toMatch(/^token=/);
+    expect(setCookieHeader[0]).toMatch(/HttpOnly/i);
   });
 
   test('returns 500 when User.findByEmail throws', async () => {
@@ -76,5 +81,49 @@ describe('POST /api/auth/login', () => {
     const res = await request(app).post('/api/auth/login').send({ email: 'admin@acme.com', password: 'Admin@123' });
     expect(res.status).toBe(500);
     expect(res.body.message).toBe('Server error during login.');
+  });
+});
+
+// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+
+describe('GET /api/auth/me', () => {
+  test('returns 401 when no cookie is present', async () => {
+    const res = await request(app).get('/api/auth/me');
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe('Not authenticated.');
+  });
+
+  test('returns user payload when a valid session cookie is present', async () => {
+    User.findByEmail.mockResolvedValue(activeUser);
+    // Log in to get the cookie
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'admin@acme.com', password: 'Admin@123' });
+    const cookie = loginRes.headers['set-cookie'][0];
+
+    const res = await request(app).get('/api/auth/me').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.user).toMatchObject({ email: 'admin@acme.com', tenantId: 2 });
+  });
+
+  test('returns 401 for a tampered cookie value', async () => {
+    const res = await request(app).get('/api/auth/me').set('Cookie', 'token=tampered.jwt.value');
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe('Invalid or expired session.');
+  });
+});
+
+// ─── POST /api/auth/logout ────────────────────────────────────────────────────
+
+describe('POST /api/auth/logout', () => {
+  test('returns 200 and clears the token cookie', async () => {
+    const res = await request(app).post('/api/auth/logout');
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Logged out successfully.');
+    // Cookie should be cleared (maxAge=0 or expires in the past)
+    const setCookieHeader = res.headers['set-cookie'];
+    expect(setCookieHeader).toBeDefined();
+    expect(setCookieHeader[0]).toMatch(/^token=/);
+    expect(setCookieHeader[0]).toMatch(/Expires=Thu, 01 Jan 1970/i);
   });
 });

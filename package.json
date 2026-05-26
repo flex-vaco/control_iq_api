@@ -10,8 +10,9 @@
     },
     "jest": {
         "testEnvironment": "node",
-        "testMatch": ["**/tests/**/*.test.js"],
-
+        "testMatch": [
+            "**/tests/**/*.test.js"
+        ],
         "collectCoverageFrom": [
             "controllers/**/*.js",
             "middleware/**/*.js",
@@ -22,6 +23,7 @@
         "adm-zip": "^0.5.10",
         "axios": "^1.13.2",
         "bcryptjs": "^2.4.3",
+        "cookie-parser": "^1.4.7",
         "cors": "^2.8.5",
         "csv-parser": "^3.2.0",
         "dotenv": "^16.0.3",
