@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const { extractEvidenceAIDetails } = require('./test_executions.controller');
 const { sanitizeFilename, validateMagicBytes } = require('../utils/file.helper');
+const schemas = require('../validations/schemas');
 
 // --- Multer Configuration for MULTIPLE Document Upload ---
 const storage = multer.diskStorage({
@@ -162,26 +163,18 @@ exports.createEvidence = (req, res) => {
       }
     }
 
-    // req.body contains form fields, req.files contains file array
-    const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
+    // Validate form fields now that multer has populated req.body
+    const { error: bodyErr, value: bodyVal } = schemas.pbcCreate.validate(req.body, { abortEarly: false, convert: true });
+    if (bodyErr) {
+      if (req.files) req.files.forEach(f => fs.unlink(f.path, () => {}));
+      return res.status(400).json({ message: 'Validation error.', details: bodyErr.details.map(d => d.message) });
+    }
+
+    const { control_id, evidence_name, testing_status, year, quarter, client_id } = bodyVal;
     const clientId = client_id;
     const tenantId = req.user.tenantId;
-    if (!clientId) {
-      // If validation fails, clean up any uploaded files
-      if (req.files) {
-        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
-        }));
-      }
-      return res.status(400).json({ message: 'Client ID is required.' });
-    }
     if (!tenantId) {
-      // If validation fails, clean up any uploaded files
-      if (req.files) {
-        req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
-        }));
-      }
+      if (req.files) req.files.forEach(f => fs.unlink(f.path, () => {}));
       return res.status(400).json({ message: 'Tenant ID is required.' });
     }
     const userId = req.user.userId;
@@ -320,7 +313,15 @@ exports.updateEvidence = (req, res) => {
 
     try {
       const evidenceId = req.params.id;
-      const { control_id, evidence_name, testing_status, year, quarter, client_id } = req.body;
+
+      // Validate form fields after multer has populated req.body
+      const { error: bodyErr, value: bodyVal } = schemas.pbcUpdate.validate(req.body, { abortEarly: false, convert: true });
+      if (bodyErr) {
+        if (req.files) req.files.forEach(f => fs.unlink(f.path, () => {}));
+        return res.status(400).json({ message: 'Validation error.', details: bodyErr.details.map(d => d.message) });
+      }
+
+      const { control_id, evidence_name, testing_status, year, quarter, client_id } = bodyVal;
       const tenantId = req.user.tenantId;
       const userId = req.user.userId;
 

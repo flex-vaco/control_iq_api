@@ -32,13 +32,16 @@ describe('POST /api/auth/login', () => {
   test('returns 400 when email is missing', async () => {
     const res = await request(app).post('/api/auth/login').send({ password: 'Admin@123' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toBe('Email and password are required.');
+    // Joi validation fires before the controller — message is 'Validation error.' with details
+    expect(res.body.message).toBe('Validation error.');
+    expect(res.body.details.some(d => d.includes('email'))).toBe(true);
   });
 
   test('returns 400 when password is missing', async () => {
     const res = await request(app).post('/api/auth/login').send({ email: 'admin@acme.com' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toBe('Email and password are required.');
+    expect(res.body.message).toBe('Validation error.');
+    expect(res.body.details.some(d => d.includes('password'))).toBe(true);
   });
 
   test('returns 401 when user does not exist', async () => {

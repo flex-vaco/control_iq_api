@@ -123,7 +123,9 @@ describe('PUT /api/data/permissions/role/:roleId', () => {
       .send({});
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/Permissions array is required/);
+    // Joi validation fires first — check its error format
+    expect(res.body.message).toBe('Validation error.');
+    expect(res.body.details.some(d => /permissions/i.test(d))).toBe(true);
   });
 
   test('returns 400 when permissions array is not an array', async () => {
