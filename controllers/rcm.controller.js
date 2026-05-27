@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const RCM = require('../models/rcm.model');
 const { isSuperAdmin } = require('../utils/auth.helper');
 
@@ -12,7 +13,7 @@ exports.getAllRcm = async (req, res) => {
     const data = await RCM.findAll(tenantId, clientId);
     res.json(data);
   } catch (error) {
-    console.error('Error fetching RCM data:', error);
+    logger.error('Error fetching RCM data:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -95,7 +96,7 @@ exports.saveRcm = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('RCM Save Error:', error);
+    logger.error('RCM Save Error:', error);
     res.status(500).json({ message: 'Failed to save RCM data.', error: error.message });
   }
 };
@@ -120,7 +121,7 @@ exports.updateRcm = async (req, res) => {
 
     res.json({ message: 'RCM record updated successfully.' });
   } catch (error) {
-    console.error('Error updating RCM:', error);
+    logger.error('Error updating RCM:', error);
     res.status(500).json({ message: 'Server error during RCM update.' });
   }
 };
@@ -144,7 +145,7 @@ exports.deleteRcm = async (req, res) => {
 
     res.json({ message: 'RCM record deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting RCM:', error);
+    logger.error('Error deleting RCM:', error);
     res.status(500).json({ message: 'Server error during RCM deletion.' });
   }
 };

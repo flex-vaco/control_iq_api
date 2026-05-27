@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const Role = require('../models/role.model');
 const { isSuperAdmin } = require('../utils/auth.helper');
 
@@ -9,7 +10,7 @@ exports.getAllRoles = async (req, res) => {
     const roles = await Role.getAll(tenantId);
     res.json(roles);
   } catch (error) {
-    console.error('Get all roles error:', error);
+    logger.error('Get all roles error:', error);
     res.status(500).json({ message: 'Failed to fetch roles.' });
   }
 };
@@ -29,7 +30,7 @@ exports.getRoleById = async (req, res) => {
     
     res.json(role);
   } catch (error) {
-    console.error('Get role by ID error:', error);
+    logger.error('Get role by ID error:', error);
     res.status(500).json({ message: 'Failed to fetch role.' });
   }
 };
@@ -69,7 +70,7 @@ exports.createRole = async (req, res) => {
       role_id: roleId 
     });
   } catch (error) {
-    console.error('Create role error:', error);
+    logger.error('Create role error:', error);
     res.status(500).json({ message: 'Failed to create role.' });
   }
 };
@@ -113,7 +114,7 @@ exports.updateRole = async (req, res) => {
     
     res.json({ message: 'Role updated successfully.' });
   } catch (error) {
-    console.error('Update role error:', error);
+    logger.error('Update role error:', error);
     res.status(500).json({ message: 'Failed to update role.' });
   }
 };
@@ -146,7 +147,7 @@ exports.deleteRole = async (req, res) => {
     
     res.json({ message: 'Role deleted successfully.' });
   } catch (error) {
-    console.error('Delete role error:', error);
+    logger.error('Delete role error:', error);
     res.status(500).json({ message: 'Failed to delete role.' });
   }
 };

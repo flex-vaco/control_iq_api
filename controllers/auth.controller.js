@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
@@ -50,7 +51,7 @@ exports.login = async (req, res) => {
     res.json({ success: true, user: payload });
 
   } catch (error) {
-    console.error('Login error:', error);
+    logger.error('Login error:', error);
     res.status(500).json({ message: 'Server error during login.' });
   }
 };

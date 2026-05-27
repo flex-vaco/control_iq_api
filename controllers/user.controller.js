@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const User = require('../models/user.model');
 const { isSuperAdmin } = require('../utils/auth.helper');
 
@@ -16,7 +17,7 @@ exports.getAllUsers = async (req, res) => {
     
     res.json(sanitizedUsers);
   } catch (error) {
-    console.error('Get all users error:', error);
+    logger.error('Get all users error:', error);
     res.status(500).json({ message: 'Failed to fetch users.' });
   }
 };
@@ -38,7 +39,7 @@ exports.getUserById = async (req, res) => {
     
     res.json(userWithoutPassword);
   } catch (error) {
-    console.error('Get user by ID error:', error);
+    logger.error('Get user by ID error:', error);
     res.status(500).json({ message: 'Failed to fetch user.' });
   }
 };
@@ -89,7 +90,7 @@ exports.createUser = async (req, res) => {
       user_id: userId 
     });
   } catch (error) {
-    console.error('Create user error:', error);
+    logger.error('Create user error:', error);
     res.status(500).json({ message: 'Failed to create user.' });
   }
 };
@@ -146,7 +147,7 @@ exports.updateUser = async (req, res) => {
     
     res.json({ message: 'User updated successfully.' });
   } catch (error) {
-    console.error('Update user error:', error);
+    logger.error('Update user error:', error);
     res.status(500).json({ message: 'Failed to update user.' });
   }
 };
@@ -171,7 +172,7 @@ exports.deleteUser = async (req, res) => {
     
     res.json({ message: 'User deleted successfully.' });
   } catch (error) {
-    console.error('Delete user error:', error);
+    logger.error('Delete user error:', error);
     res.status(500).json({ message: 'Failed to delete user.' });
   }
 };

@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const Client = require('../models/client.model');
 const { isSuperAdmin } = require('../utils/auth.helper');
 
@@ -10,7 +11,7 @@ exports.getAllClients = async (req, res) => {
     const data = await Client.findAllByTenant(tenantId);
     res.json(data);
   } catch (error) {
-    console.error('Error fetching clients:', error);
+    logger.error('Error fetching clients:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -28,7 +29,7 @@ exports.getClientById = async (req, res) => {
     
     res.json(client);
   } catch (error) {
-    console.error('Error fetching client:', error);
+    logger.error('Error fetching client:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -56,7 +57,7 @@ exports.createClient = async (req, res) => {
       client_id: clientId 
     });
   } catch (error) {
-    console.error('Error creating client:', error);
+    logger.error('Error creating client:', error);
     res.status(500).json({ message: 'Server error during client creation.' });
   }
 };
@@ -87,7 +88,7 @@ exports.updateClient = async (req, res) => {
 
     res.json({ message: 'Client updated successfully.' });
   } catch (error) {
-    console.error('Error updating client:', error);
+    logger.error('Error updating client:', error);
     res.status(500).json({ message: 'Server error during client update.' });
   }
 };
@@ -107,7 +108,7 @@ exports.deleteClient = async (req, res) => {
 
     res.json({ message: 'Client deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting client:', error);
+    logger.error('Error deleting client:', error);
     res.status(500).json({ message: 'Server error during client deletion.' });
   }
 };
@@ -118,7 +119,7 @@ exports.getAllClientsForDropdown = async (req, res) => {
     const data = await Client.findAll();
     res.json(data);
   } catch (error) {
-    console.error('Error fetching clients for dropdown:', error);
+    logger.error('Error fetching clients for dropdown:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };

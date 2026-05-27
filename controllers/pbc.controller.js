@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const RCM = require('../models/rcm.model');
 const PBC = require('../models/pbc.model');
 const db = require('../config/db');
@@ -70,7 +71,7 @@ exports.getAvailableRcmControls = async (req, res) => {
 
     res.json(controls);
   } catch (error) {
-    console.error('Error fetching RCM controls:', error);
+    logger.error('Error fetching RCM controls:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -120,7 +121,7 @@ exports.checkDuplicatePbc = async (req, res) => {
 
     return res.json({ exists: false, message: 'No duplicate found.' });
   } catch (error) {
-    console.error('Error checking duplicate PBC:', error);
+    logger.error('Error checking duplicate PBC:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -137,7 +138,7 @@ exports.getAllEvidence = async (req, res) => {
     const data = await PBC.findAll(tenantId, clientId);
     res.json(data);
   } catch (error) {
-    console.error('Error fetching Evidence data:', error);
+    logger.error('Error fetching Evidence data:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -147,7 +148,7 @@ exports.getAllEvidence = async (req, res) => {
 exports.createEvidence = (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
-      console.error('Multer file upload error:', err);
+      logger.error('Multer file upload error:', err);
       if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ message: 'File upload error: ' + err.message });
       }
@@ -183,7 +184,7 @@ exports.createEvidence = (req, res) => {
       // If validation fails, clean up any uploaded files
       if (req.files) {
         req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+          if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
         }));
       }
       return res.status(400).json({ message: 'Missing required fields: Control ID, Evidence Name, or Status.' });
@@ -196,7 +197,7 @@ exports.createEvidence = (req, res) => {
          // Clean up files if RCM lookup fails
         if (req.files) {
           req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           }));
         }
         return res.status(404).json({ message: `RCM Control ID '${control_id}' not found for this client.` });
@@ -266,13 +267,13 @@ exports.createEvidence = (req, res) => {
               const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
               await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
             } catch (error) {
-              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              logger.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
               // Don't throw - continue with other documents
             }
           });
           // Process in background, don't block response
           Promise.all(policyDocumentPromises).catch(err => {
-            console.error('Error processing policy document AI extraction:', err);
+            logger.error('Error processing policy document AI extraction:', err);
           });
         }
       }
@@ -286,10 +287,10 @@ exports.createEvidence = (req, res) => {
       // If DB fails, clean up the uploaded files
       if (req.files) {
         req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file after DB error:", unlinkErr);
+          if (unlinkErr) logger.error("Failed to delete temp file after DB error:", unlinkErr);
         }));
       }
-      console.error('Error creating Evidence Request:', error);
+      logger.error('Error creating Evidence Request:', error);
       res.status(500).json({ message: 'Server error during evidence creation.' });
     }
   });
@@ -420,20 +421,20 @@ exports.updateEvidence = (req, res) => {
               const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
               await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
             } catch (error) {
-              console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+              logger.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
               // Don't throw - continue with other documents
             }
           });
           // Process in background, don't block response
           Promise.all(policyDocumentPromises).catch(err => {
-            console.error('Error processing policy document AI extraction:', err);
+            logger.error('Error processing policy document AI extraction:', err);
           });
         }
       }
 
       res.json({ message: 'Evidence updated successfully.' });
     } catch (error) {
-      console.error('Error updating Evidence:', error);
+      logger.error('Error updating Evidence:', error);
       res.status(500).json({ message: 'Server error during evidence update.' });
     }
   });
@@ -458,7 +459,7 @@ exports.deleteEvidence = async (req, res) => {
 
     res.json({ message: 'Evidence deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting Evidence:', error);
+    logger.error('Error deleting Evidence:', error);
     res.status(500).json({ message: 'Server error during evidence deletion.' });
   }
 };
@@ -480,7 +481,7 @@ exports.getEvidenceDocuments = async (req, res) => {
     const documents = await PBC.getEvidenceDocuments(evidenceId, tenantId, false);
     res.json(documents);
   } catch (error) {
-    console.error('Error fetching evidence documents:', error);
+    logger.error('Error fetching evidence documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -502,7 +503,7 @@ exports.getPolicyDocuments = async (req, res) => {
     const documents = await PBC.getPolicyDocuments(evidenceId, tenantId);
     res.json(documents);
   } catch (error) {
-    console.error('Error fetching policy documents:', error);
+    logger.error('Error fetching policy documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -511,7 +512,7 @@ exports.getPolicyDocuments = async (req, res) => {
 exports.addEvidenceDocuments = (req, res) => {
   upload(req, res, async (err) => {
     if (err) {
-      console.error('Multer file upload error:', err);
+      logger.error('Multer file upload error:', err);
       if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({ message: 'File upload error: ' + err.message });
       }
@@ -536,7 +537,7 @@ exports.addEvidenceDocuments = (req, res) => {
         // Clean up uploaded files if validation fails
         if (req.files) {
           req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           }));
         }
         return res.status(400).json({ message: 'Evidence ID is required.' });
@@ -546,7 +547,7 @@ exports.addEvidenceDocuments = (req, res) => {
         // Clean up uploaded files if validation fails
         if (req.files) {
           req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           }));
         }
         return res.status(400).json({ message: 'Tenant ID is required.' });
@@ -558,7 +559,7 @@ exports.addEvidenceDocuments = (req, res) => {
         // Clean up uploaded files if evidence not found
         if (req.files) {
           req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           }));
         }
         return res.status(404).json({ message: 'Evidence not found.' });
@@ -634,13 +635,13 @@ exports.addEvidenceDocuments = (req, res) => {
                 const fileExtension = doc.artifact_url.toLowerCase().split('.').pop();
                 await extractEvidenceAIDetails(doc.document_id, doc.artifact_url, tenantId, userId);
               } catch (error) {
-                console.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
+                logger.error(`Error extracting AI details for policy document ${doc.document_id}:`, error);
                 // Don't throw - continue with other documents
               }
             });
             // Process in background, don't block response
             Promise.all(policyDocumentPromises).catch(err => {
-              console.error('Error processing policy document AI extraction:', err);
+              logger.error('Error processing policy document AI extraction:', err);
             });
           }
         } catch (dbError) {
@@ -648,7 +649,7 @@ exports.addEvidenceDocuments = (req, res) => {
           // Clean up uploaded files on DB error
           if (req.files) {
             req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+              if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
             }));
           }
           throw dbError;
@@ -667,10 +668,10 @@ exports.addEvidenceDocuments = (req, res) => {
       // If DB fails, clean up the uploaded files
       if (req.files) {
         req.files.forEach(file => fs.unlink(file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file after DB error:", unlinkErr);
+          if (unlinkErr) logger.error("Failed to delete temp file after DB error:", unlinkErr);
         }));
       }
-      console.error('Error adding evidence documents:', error);
+      logger.error('Error adding evidence documents:', error);
       res.status(500).json({ message: 'Server error during document upload.' });
     }
   });
@@ -699,7 +700,7 @@ exports.deleteEvidenceDocument = async (req, res) => {
 
     res.json({ message: 'Document deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting evidence document:', error);
+    logger.error('Error deleting evidence document:', error);
     res.status(500).json({ message: 'Server error during document deletion.' });
   }
 };
@@ -732,7 +733,7 @@ exports.deleteSample = async (req, res) => {
 
     res.json({ message: 'Sample and all its documents deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting sample:', error);
+    logger.error('Error deleting sample:', error);
     res.status(500).json({ message: 'Server error during sample deletion.' });
   }
 };

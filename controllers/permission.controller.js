@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const Permission = require('../models/permission.model');
 const { isSuperAdmin, getEffectiveTenantId } = require('../utils/auth.helper');
 
@@ -13,7 +14,7 @@ exports.getPermissionsByRole = async (req, res) => {
     const permissions = await Permission.getByRoleId(roleId, tenantId);
     res.json(permissions);
   } catch (error) {
-    console.error('Get permissions by role error:', error);
+    logger.error('Get permissions by role error:', error);
     res.status(500).json({ message: 'Failed to fetch permissions.' });
   }
 };
@@ -45,7 +46,7 @@ exports.getMyPermissions = async (req, res) => {
     const permissions = await Permission.getByRoleId(roleId, tenantId);
     res.json(permissions);
   } catch (error) {
-    console.error('Get my permissions error:', error);
+    logger.error('Get my permissions error:', error);
     res.status(500).json({ message: 'Failed to fetch permissions.' });
   }
 };
@@ -79,7 +80,7 @@ exports.updatePermissions = async (req, res) => {
     
     res.json({ message: 'Permissions updated successfully.' });
   } catch (error) {
-    console.error('Update permissions error:', error);
+    logger.error('Update permissions error:', error);
     res.status(500).json({ message: 'Failed to update permissions.' });
   }
 };
@@ -100,7 +101,7 @@ exports.getAvailableResources = async (req, res) => {
     ];
     res.json(resources);
   } catch (error) {
-    console.error('Get available resources error:', error);
+    logger.error('Get available resources error:', error);
     res.status(500).json({ message: 'Failed to fetch resources.' });
   }
 };
@@ -119,7 +120,7 @@ exports.getAllTenants = async (req, res) => {
     const tenants = await Tenant.getAll();
     res.json(tenants);
   } catch (error) {
-    console.error('Get all tenants error:', error);
+    logger.error('Get all tenants error:', error);
     res.status(500).json({ message: 'Failed to fetch tenants.' });
   }
 };

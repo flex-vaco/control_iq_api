@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
@@ -157,14 +158,14 @@ exports.createTestExecution = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error creating test execution:', error);
+    logger.error('Error creating test execution:', error);
     res.status(500).json({ message: 'Server error during test execution creation.' });
   }
 };
 
 // GET check if duplicate test execution exists (control_id, year, quarter combination)
 exports.checkDuplicateTestExecution = async (req, res) => {
-  console.log('checkDuplicateTestExecution');
+  logger.info('checkDuplicateTestExecution');
   try {
     const { control_id, year, quarter, client_id } = req.query;
     const tenantId = req.user.tenantId;
@@ -179,7 +180,7 @@ exports.checkDuplicateTestExecution = async (req, res) => {
     if (!tenantId) {
       return res.status(400).json({ message: 'Tenant ID is required.' });
     }
-    console.log(control_id, year, quarter, client_id);
+    logger.info(control_id, year, quarter, client_id);
     // Get the RCM Primary Key (rcm_id) from the selected control_id
     const rcmId = await RCM.findRcmIdByControlId(control_id, client_id, tenantId);
     if (!rcmId) {
@@ -188,7 +189,7 @@ exports.checkDuplicateTestExecution = async (req, res) => {
         message: `RCM Control ID '${control_id}' not found for this client.` 
       });
     }
-    console.log(rcmId);
+    logger.info(rcmId);
     // Check for duplicate
     const duplicate = await TestExecution.checkDuplicate(
       rcmId, 
@@ -196,7 +197,7 @@ exports.checkDuplicateTestExecution = async (req, res) => {
       quarter, 
       tenantId
     );
-    console.log(duplicate);
+    logger.info(duplicate);
     if (duplicate) {
       return res.json({ 
         exists: true, 
@@ -207,7 +208,7 @@ exports.checkDuplicateTestExecution = async (req, res) => {
 
     return res.json({ exists: false, message: 'No duplicate found.' });
   } catch (error) {
-    console.error('Error checking duplicate test execution:', error);
+    logger.error('Error checking duplicate test execution:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -250,7 +251,7 @@ exports.getTestExecutionData = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching test execution data:', error);
+    logger.error('Error fetching test execution data:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -312,7 +313,7 @@ exports.getEvidenceDataForTesting = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching evidence data for testing:', error);
+    logger.error('Error fetching evidence data for testing:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -329,7 +330,7 @@ exports.getAllTestExecutions = async (req, res) => {
     const data = await TestExecution.findAllByClient(clientId, tenantId);
     res.json(data);
   } catch (error) {
-    console.error('Error fetching test executions:', error);
+    logger.error('Error fetching test executions:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -361,7 +362,7 @@ exports.updateTestExecutionRemarks = async (req, res) => {
 
     res.json({ message: 'Test execution remarks updated successfully.' });
   } catch (error) {
-    console.error('Error updating test execution remarks:', error);
+    logger.error('Error updating test execution remarks:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -418,7 +419,7 @@ exports.getTestExecutionById = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching test execution details:', error);
+    logger.error('Error fetching test execution details:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -429,14 +430,14 @@ async function extractEvidenceAIDetails(evidence_document_id, evidence_url, tena
     throw new Error('Missing required parameters for AI extraction');
   }
 
-  console.log('Extracting AI details for document:', evidence_document_id, 'URL:', evidence_url);
+  logger.info('Extracting AI details for document:', evidence_document_id, 'URL:', evidence_url);
   
   // Detect file type from file extension (handle paths like "evidences/filename.docx")
   const urlLower = evidence_url.toLowerCase();
   const lastDotIndex = urlLower.lastIndexOf('.');
   const fileExtension = lastDotIndex !== -1 ? urlLower.substring(lastDotIndex + 1) : '';
   
-  console.log('Detected file extension:', fileExtension);
+  logger.info('Detected file extension:', fileExtension);
   
   let mimeType = 'image/png'; // default
   let fileBase64;
@@ -444,17 +445,17 @@ async function extractEvidenceAIDetails(evidence_document_id, evidence_url, tena
 
   // Check if it's an office document (doc, docx, xls, xlsx)
   if (fileExtension === 'doc' || fileExtension === 'docx') {
-    console.log('Processing Word document (doc/docx)');
+    logger.info('Processing Word document (doc/docx)');
     // Convert Word document to PDF and extract text
     extractedText = await extractTextFromWord(process.env.GEMINI_AI_KEY, evidence_url);
   } else if (fileExtension === 'xls' || fileExtension === 'xlsx') {
-    console.log('Processing Excel document (xls/xlsx)');
+    logger.info('Processing Excel document (xls/xlsx)');
     // Convert Excel document to PDF and extract text
     extractedText = await extractTextFromExcelWithImages(process.env.GEMINI_AI_KEY, evidence_url);
   } else {
     // For PDFs and images, use existing method
     fileBase64 = await convertImageUrlToBase64(evidence_url);
-    console.log('File converted to base64 successfully');
+    logger.info('File converted to base64 successfully');
 
     if (fileExtension === 'pdf') {
       mimeType = 'application/pdf';
@@ -507,7 +508,7 @@ exports.getEvidenceAIDetails = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching evidence AI details:', error);
+    logger.error('Error fetching evidence AI details:', error);
     res.status(500).json({ 
       message: 'Server error.',
       error: error.message 
@@ -644,7 +645,7 @@ exports.compareAttributes = async (req, res) => {
       });
     } catch (axiosError) {
       const errorData = axiosError.response?.data || {};
-      console.error('Gemini API Error:', errorData);
+      logger.error('Gemini API Error:', errorData);
       throw new Error(`API Error: ${errorData.error?.message || axiosError.message}`);
     }
 
@@ -655,7 +656,7 @@ exports.compareAttributes = async (req, res) => {
     try {
       parsedResult = JSON.parse(resultText);
     } catch (parseError) {
-      console.error('Invalid JSON from Gemini:', resultText);
+      logger.error('Invalid JSON from Gemini:', resultText);
       throw new Error('Invalid JSON response from AI');
     }
 
@@ -674,7 +675,7 @@ exports.compareAttributes = async (req, res) => {
       try {
         parsedExistingResult = existingRecord.result;
       } catch (parseError) {
-        console.error('Error parsing existing result JSON:', parseError);
+        logger.error('Error parsing existing result JSON:', parseError);
         parsedExistingResult = parsedResult; // Fallback to new parsed result
       }
 
@@ -708,7 +709,7 @@ exports.compareAttributes = async (req, res) => {
       test_execution_evidence_document_id: testExecutionEvidenceDocumentId
     });
   } catch (error) {
-    console.error('Error comparing attributes:', error);
+    logger.error('Error comparing attributes:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -747,7 +748,7 @@ exports.checkTestExecutionEvidenceDocument = async (req, res) => {
           parsedResult = existingRecord.result;
         }
       } catch (parseError) {
-        console.error('Error parsing result JSON:', parseError);
+        logger.error('Error parsing result JSON:', parseError);
       }
 
       return res.json({
@@ -764,7 +765,7 @@ exports.checkTestExecutionEvidenceDocument = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error checking test execution evidence document:', error);
+    logger.error('Error checking test execution evidence document:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -798,7 +799,7 @@ exports.getTestExecutionEvidenceDocuments = async (req, res) => {
             : record.result;
         }
       } catch (parseError) {
-        console.error('Error parsing result JSON:', parseError);
+        logger.error('Error parsing result JSON:', parseError);
       }
 
       return {
@@ -812,7 +813,7 @@ exports.getTestExecutionEvidenceDocuments = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching test execution evidence documents:', error);
+    logger.error('Error fetching test execution evidence documents:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -839,7 +840,7 @@ exports.saveAnnotatedImage = (req, res) => {
         // Clean up uploaded file if validation fails
         if (req.file) {
           fsSync.unlink(req.file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           });
         }
         return res.status(400).json({ 
@@ -882,7 +883,7 @@ exports.saveAnnotatedImage = (req, res) => {
         // Clean up uploaded file if tenant ID is missing
         if (req.file) {
           fsSync.unlink(req.file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           });
         }
         return res.status(400).json({ message: 'Tenant ID is required.' });
@@ -891,16 +892,16 @@ exports.saveAnnotatedImage = (req, res) => {
       // Get control_id - try from request body first, then from test execution
       let finalControlId = control_id;
       if (!finalControlId || finalControlId === 'undefined' || finalControlId === 'null' || String(finalControlId).trim() === '') {
-        console.warn('Control ID missing from request body, fetching from test execution');
+        logger.warn('Control ID missing from request body, fetching from test execution');
         const testExecution = await TestExecution.findById(test_execution_id, tenantId);
         if (testExecution && testExecution.control_id) {
           finalControlId = testExecution.control_id;
-          console.log('Retrieved control_id from test execution:', finalControlId);
+          logger.info('Retrieved control_id from test execution:', finalControlId);
         } else {
           // Clean up uploaded file if we can't get control_id
           if (req.file) {
             fsSync.unlink(req.file.path, (unlinkErr) => {
-              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+              if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
             });
           }
           return res.status(400).json({ 
@@ -918,11 +919,11 @@ exports.saveAnnotatedImage = (req, res) => {
       try {
         await fsSync.promises.rename(req.file.path, finalPath);
       } catch (renameError) {
-        console.error('Error renaming file:', renameError);
+        logger.error('Error renaming file:', renameError);
         // Clean up uploaded file
         if (req.file) {
           fsSync.unlink(req.file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           });
         }
         return res.status(500).json({ 
@@ -947,7 +948,7 @@ exports.saveAnnotatedImage = (req, res) => {
         if (!testExecution) {
           if (req.file) {
             fsSync.unlink(req.file.path, (unlinkErr) => {
-              if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+              if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
             });
           }
           return res.status(404).json({ message: 'Test execution not found.' });
@@ -980,7 +981,7 @@ exports.saveAnnotatedImage = (req, res) => {
       if (!updated) {
         if (req.file) {
           fsSync.unlink(req.file.path, (unlinkErr) => {
-            if (unlinkErr) console.error("Failed to delete temp file:", unlinkErr);
+            if (unlinkErr) logger.error("Failed to delete temp file:", unlinkErr);
           });
         }
         return res.status(404).json({ message: 'Failed to update result artifact URL.' });
@@ -998,10 +999,10 @@ exports.saveAnnotatedImage = (req, res) => {
       // Clean up uploaded file on error
       if (req.file) {
         fsSync.unlink(req.file.path, (unlinkErr) => {
-          if (unlinkErr) console.error("Failed to delete temp file after error:", unlinkErr);
+          if (unlinkErr) logger.error("Failed to delete temp file after error:", unlinkErr);
         });
       }
-      console.error('Error saving annotated file:', error);
+      logger.error('Error saving annotated file:', error);
       // Ensure CORS headers are set in error response
       res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
       res.header('Access-Control-Allow-Credentials', 'true');
@@ -1034,7 +1035,7 @@ async function extractTextFromEvidenceFile(apiKey, fileBase64, mimeType = 'image
   };
 
   const apiUrl = `${process.env.GEMINI_AI_ENDPOINT}?key=${apiKey}`;
-  console.log('Calling Gemini API...');
+  logger.info('Calling Gemini API...');
 
   let response;
   try {
@@ -1045,7 +1046,7 @@ async function extractTextFromEvidenceFile(apiKey, fileBase64, mimeType = 'image
     });
   } catch (axiosError) {
     const errorData = axiosError.response?.data || {};
-    console.error('Gemini API Error:', errorData);
+    logger.error('Gemini API Error:', errorData);
     throw new Error(`API Error: ${errorData.error?.message || axiosError.message}`);
   }
 
@@ -1056,7 +1057,7 @@ async function extractTextFromEvidenceFile(apiKey, fileBase64, mimeType = 'image
     try {
       parsedResult = JSON.parse(resultText);
     } catch (parseError) {
-      console.error('Invalid JSON from Gemini:', resultText);
+      logger.error('Invalid JSON from Gemini:', resultText);
       throw new Error('Invalid JSON response from AI');
     }
 
@@ -1114,7 +1115,7 @@ exports.updateTestExecutionEvidenceResult = async (req, res) => {
         existingResult = existingRecord.result;
       }
     } catch (parseError) {
-      console.error('Error parsing existing result:', parseError);
+      logger.error('Error parsing existing result:', parseError);
       existingResult = {};
     }
 
@@ -1179,7 +1180,7 @@ exports.updateTestExecutionEvidenceResult = async (req, res) => {
 
     res.json({ message: 'Test execution evidence result updated successfully.' });
   } catch (error) {
-    console.error('Error updating test execution evidence result:', error);
+    logger.error('Error updating test execution evidence result:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -1250,7 +1251,7 @@ exports.updateTestExecutionStatusAndResult = async (req, res) => {
 
     res.json({ message: 'Test execution status and result updated successfully.' });
   } catch (error) {
-    console.error('Error updating test execution status and result:', error);
+    logger.error('Error updating test execution status and result:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -1307,7 +1308,7 @@ exports.updateTestExecutionPrompt = async (req, res) => {
       results_cleared: resultsCleared
     });
   } catch (error) {
-    console.error('Error updating test execution prompt:', error);
+    logger.error('Error updating test execution prompt:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -1335,7 +1336,7 @@ async function convertOfficeToPdf(filePath) {
     const pdfBuffer = await libreConvert(fileBuffer, '.pdf', undefined);
     return pdfBuffer;
   } catch (error) {
-    console.error('Error converting office document to PDF:', error);
+    logger.error('Error converting office document to PDF:', error);
     throw new Error(`Failed to convert office document to PDF: ${error.message}`);
   }
 }
@@ -1391,7 +1392,7 @@ async function extractWordMetadata(filePath) {
       };
     }
   } catch (error) {
-    console.warn(`Could not extract all metadata: ${error.message}`);
+    logger.warn(`Could not extract all metadata: ${error.message}`);
   }
 
   return metadata;
@@ -1553,7 +1554,7 @@ async function extractWordStructuredContent(filePath) {
 // Extract content from image using inline base64 (no file upload needed)
 async function extractWordImageContent(apiKey, imageInfo) {
   try {
-    console.log(`Analyzing image: ${imageInfo.id}`);
+    logger.info(`Analyzing image: ${imageInfo.id}`);
     
     // Validate buffer exists
     if (!imageInfo.buffer || !Buffer.isBuffer(imageInfo.buffer)) {
@@ -1568,7 +1569,7 @@ async function extractWordImageContent(apiKey, imageInfo) {
     
     const extractedData = await analyzeImageWithInlineData(apiKey, imageInfo.buffer, mimeType, imageInfo.id);
     
-    console.log(`Extracted data from ${imageInfo.id} using inline data`);
+    logger.info(`Extracted data from ${imageInfo.id} using inline data`);
     
     return {
       id: imageInfo.id,
@@ -1577,7 +1578,7 @@ async function extractWordImageContent(apiKey, imageInfo) {
     };
     
   } catch (error) {
-    console.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
+    logger.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
     return {
       id: imageInfo.id,
       filename: imageInfo.filename,
@@ -1606,12 +1607,12 @@ async function extractTextFromWord(apiKey, wordPath) {
       throw new Error(`Word document not found at path: ${fullPath}`);
     }
 
-    console.log('Extracting data from Word file:', fullPath);
+    logger.info('Extracting data from Word file:', fullPath);
 
     // Extract document metadata
-    console.log('Extracting document metadata...');
+    logger.info('Extracting document metadata...');
     const documentProperties = await extractWordMetadata(fullPath);
-    console.log('Document metadata extracted');
+    logger.info('Document metadata extracted');
 
     const metadata = {
       filename: path.basename(fullPath),
@@ -1625,28 +1626,28 @@ async function extractTextFromWord(apiKey, wordPath) {
     };
     
     // Extract text content
-    console.log('Extracting text content...');
+    logger.info('Extracting text content...');
     metadata.content.rawText = await extractWordTextContent(fullPath);
-    console.log(`Extracted ${metadata.content.rawText.length} characters of text`);
+    logger.info(`Extracted ${metadata.content.rawText.length} characters of text`);
     
     // Extract structured content
-    console.log('Extracting structured content...');
+    logger.info('Extracting structured content...');
     metadata.structure = await extractWordStructuredContent(fullPath);
-    console.log(`Found ${metadata.structure.headings.length} headings, ${metadata.structure.paragraphs.length} paragraphs, ${metadata.structure.lists.length} lists`);
+    logger.info(`Found ${metadata.structure.headings.length} headings, ${metadata.structure.paragraphs.length} paragraphs, ${metadata.structure.lists.length} lists`);
     
     // Extract tables
-    console.log('Extracting tables...');
+    logger.info('Extracting tables...');
     metadata.tables = await extractWordTables(fullPath);
-    console.log(`Extracted ${metadata.tables.length} tables`);
+    logger.info(`Extracted ${metadata.tables.length} tables`);
     
     // Extract images
-    console.log('Extracting images...');
+    logger.info('Extracting images...');
     //metadata.images = await extractWordImages(fullPath);
-    console.log(`Extracted ${metadata.images.length} images`);
+    logger.info(`Extracted ${metadata.images.length} images`);
     
     // Analyze images directly using inline base64 (no upload needed)
     if (metadata.images.length > 0) {
-      console.log(`Analyzing ${metadata.images.length} images using inline base64...`);
+      logger.info(`Analyzing ${metadata.images.length} images using inline base64...`);
         
         const imageAnalysis = await processBatch(
         metadata.images,
@@ -1671,7 +1672,7 @@ async function extractTextFromWord(apiKey, wordPath) {
         }
         
         const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
-      console.log(`Successfully analyzed ${successCount}/${metadata.images.length} images`);
+      logger.info(`Successfully analyzed ${successCount}/${metadata.images.length} images`);
     } else {
       // Remove buffers even if no images
       for (const img of metadata.images) {
@@ -1692,14 +1693,14 @@ async function extractTextFromWord(apiKey, wordPath) {
       pages: metadata.documentProperties.app.pages || 0
     };
     
-    console.log('Word extraction completed successfully');
+    logger.info('Word extraction completed successfully');
     
     // Return as JSON string for database storage
     const result = JSON.stringify(metadata);
     return result;
     
   } catch (error) {
-    console.error('Error extracting text from Word document:', error);
+    logger.error('Error extracting text from Word document:', error);
     throw error;
   }
 }
@@ -1812,7 +1813,7 @@ function extractCellStyle(cell) {
 }
 
 function extractSheetData(worksheet, sheetName, zipImages = []) {
-  console.log(`Processing sheet: ${sheetName}`);
+  logger.info(`Processing sheet: ${sheetName}`);
   
   const data = {
     name: sheetName,
@@ -1835,7 +1836,7 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
     for (const merge in worksheet._merges) {
       data.mergedCells.push(merge);
     }
-    console.log(`Found ${data.mergedCells.length} merged cell ranges`);
+    logger.info(`Found ${data.mergedCells.length} merged cell ranges`);
   }
 
   // Extract all cells
@@ -1862,7 +1863,7 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
     });
   });
   
-  console.log(`Extracted ${data.cells.length} cells with content`);
+  logger.info(`Extracted ${data.cells.length} cells with content`);
 
   // Extract images with buffers for later analysis
   if (worksheet._media && worksheet._media.length > 0) {
@@ -1883,11 +1884,11 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
         // If no buffer found in media object, try to get from zip images
         if (!buffer && zipImages && zipImages.length > idx) {
           buffer = zipImages[idx].buffer;
-          console.log(`Using buffer from zip image ${idx} for media ${idx}`);
+          logger.info(`Using buffer from zip image ${idx} for media ${idx}`);
         } else if (!buffer && zipImages && zipImages.length > 0) {
           // Try to match by index (fallback to first available)
           buffer = zipImages[Math.min(idx, zipImages.length - 1)].buffer;
-          console.log(`Using fallback zip image buffer for media ${idx}`);
+          logger.info(`Using fallback zip image buffer for media ${idx}`);
         }
         
         // Determine extension from type or name
@@ -1943,18 +1944,18 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
         
         data.images.push(imageData);
         } else {
-          console.warn(`Image ${idx} in sheet "${sheetName}" has no valid buffer. Available properties: ${Object.keys(media).join(', ')}`);
+          logger.warn(`Image ${idx} in sheet "${sheetName}" has no valid buffer. Available properties: ${Object.keys(media).join(', ')}`);
         }
       } catch (error) {
-        console.warn(`Failed to extract image ${idx}: ${error.message}`);
-        console.warn(`Error stack: ${error.stack}`);
+        logger.warn(`Failed to extract image ${idx}: ${error.message}`);
+        logger.warn(`Error stack: ${error.stack}`);
       }
     });
     
-    console.log(`Extracted ${data.images.length} images from sheet "${sheetName}"`);
+    logger.info(`Extracted ${data.images.length} images from sheet "${sheetName}"`);
   } else if (zipImages && zipImages.length > 0) {
     // If no media objects but we have zip images, use them
-    console.log(`No media objects found, using ${zipImages.length} images from zip file`);
+    logger.info(`No media objects found, using ${zipImages.length} images from zip file`);
     zipImages.forEach((zipImg, idx) => {
       data.images.push({
         id: `${sheetName}_img_${idx}`,
@@ -1984,7 +1985,7 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
     }
     
     if (data.dataValidations.length > 0) {
-      console.log(`Extracted ${data.dataValidations.length} data validations`);
+      logger.info(`Extracted ${data.dataValidations.length} data validations`);
     }
   }
 
@@ -1999,7 +2000,7 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
     });
     
     if (data.conditionalFormatting.length > 0) {
-      console.log(`Extracted ${data.conditionalFormatting.length} conditional formatting rules`);
+      logger.info(`Extracted ${data.conditionalFormatting.length} conditional formatting rules`);
     }
   }
 
@@ -2019,7 +2020,7 @@ function extractSheetData(worksheet, sheetName, zipImages = []) {
   });
   
   if (data.comments.length > 0) {
-    console.log(`Extracted ${data.comments.length} comments`);
+    logger.info(`Extracted ${data.comments.length} comments`);
   }
 
   return data;
@@ -2048,7 +2049,7 @@ class RateLimiter {
     const waitTime = 60000 - timeSinceOldest + 1000;
     
     if (waitTime > 0) {
-      console.warn(`Rate limit reached. Waiting ${(waitTime/1000).toFixed(1)}s...`);
+      logger.warn(`Rate limit reached. Waiting ${(waitTime/1000).toFixed(1)}s...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       
       const afterWait = Date.now();
@@ -2072,7 +2073,7 @@ async function processBatch(items, processFn, batchSize) {
     const batchNumber = Math.floor(i / batchSize) + 1;
     const totalBatches = Math.ceil(items.length / batchSize);
     
-    console.log(`Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`);
+    logger.info(`Processing batch ${batchNumber}/${totalBatches} (${batch.length} items)`);
     
     const batchResults = await Promise.all(
       batch.map(item => processFn(item))
@@ -2164,14 +2165,14 @@ Return the data in this exact JSON format:
     return extractedData;
   } catch (error) {
     const errorData = error.response?.data || {};
-    console.error(`Gemini API Error for ${imageId}:`, errorData);
+    logger.error(`Gemini API Error for ${imageId}:`, errorData);
     throw new Error(`API Error: ${errorData.error?.message || error.message}`);
   }
 }
 
 async function extractImageContent(apiKey, imageInfo) {
   try {
-    console.log(`Analyzing image: ${imageInfo.id}`);
+    logger.info(`Analyzing image: ${imageInfo.id}`);
     
     // Validate buffer exists
     if (!imageInfo.buffer || !Buffer.isBuffer(imageInfo.buffer)) {
@@ -2184,7 +2185,7 @@ async function extractImageContent(apiKey, imageInfo) {
     
     const extractedData = await analyzeImageWithInlineData(apiKey, imageInfo.buffer, mimeType, imageInfo.id);
     
-    console.log(`Extracted data from ${imageInfo.id} using inline data`);
+    logger.info(`Extracted data from ${imageInfo.id} using inline data`);
     
     return {
       id: imageInfo.id,
@@ -2194,7 +2195,7 @@ async function extractImageContent(apiKey, imageInfo) {
     };
     
   } catch (error) {
-    console.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
+    logger.error(`Failed to analyze ${imageInfo.id}: ${error.message}`);
     return {
       id: imageInfo.id,
       sheetName: imageInfo.sheetName,
@@ -2242,13 +2243,13 @@ async function extractExcelImagesFromZip(filePath) {
           });
         }
     } catch (error) {
-        console.warn(`Failed to extract image from zip entry ${entry.entryName}: ${error.message}`);
+        logger.warn(`Failed to extract image from zip entry ${entry.entryName}: ${error.message}`);
       }
     });
     
-    console.log(`Extracted ${images.length} images from Excel zip file`);
+    logger.info(`Extracted ${images.length} images from Excel zip file`);
   } catch (error) {
-    console.error(`Failed to extract images from Excel zip: ${error.message}`);
+    logger.error(`Failed to extract images from Excel zip: ${error.message}`);
   }
   
   return images;
@@ -2266,7 +2267,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
       throw new Error(`Excel document not found at path: ${fullPath}`);
     }
 
-    console.log('Extracting data from Excel file:', fullPath);
+    logger.info('Extracting data from Excel file:', fullPath);
 
     // Extract images from zip file first (as backup)
     const zipImages = await extractExcelImagesFromZip(fullPath);
@@ -2275,7 +2276,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(fullPath);
     
-    console.log(`Loaded workbook with ${workbook.worksheets.length} sheets`);
+    logger.info(`Loaded workbook with ${workbook.worksheets.length} sheets`);
     
     const metadata = {
       filename: path.basename(fullPath),
@@ -2297,27 +2298,27 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
         const sheetData = extractSheetData(worksheet, worksheet.name, zipImages);
         metadata.sheets.push(sheetData);
       } catch (error) {
-        console.error(`Failed to process sheet "${worksheet.name}": ${error.message}`);
+        logger.error(`Failed to process sheet "${worksheet.name}": ${error.message}`);
       }
     }
     
-    console.log(`Extracted data from ${metadata.sheets.length} sheets`);
+    logger.info(`Extracted data from ${metadata.sheets.length} sheets`);
     
     // Analyze images directly using inline base64 (no upload needed)
     const allImages = [];
     // Collect all images from all sheets
     for (const sheet of metadata.sheets) {
       if (sheet.images.length > 0) {
-        console.log(`Found ${sheet.images.length} images in sheet "${sheet.name}"`);
+        logger.info(`Found ${sheet.images.length} images in sheet "${sheet.name}"`);
         allImages.push(...sheet.images);
       }
     }
     
-    console.log(`Total images to analyze: ${allImages.length}`);
+    logger.info(`Total images to analyze: ${allImages.length}`);
     
     // Analyze images directly using inline data
     if (allImages.length > 0) {
-      console.log(`Analyzing ${allImages.length} images using inline base64...`);
+      logger.info(`Analyzing ${allImages.length} images using inline base64...`);
       
       const imageAnalysis = await processBatch(
         allImages,
@@ -2344,7 +2345,7 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
       }
       
       const successCount = imageAnalysis.filter(r => r.extractedContent !== null).length;
-      console.log(`Successfully analyzed ${successCount}/${allImages.length} images`);
+      logger.info(`Successfully analyzed ${successCount}/${allImages.length} images`);
     } else {
       // Remove buffers even if no images
       for (const sheet of metadata.sheets) {
@@ -2371,11 +2372,11 @@ async function extractTextFromExcelWithImages(apiKey, excelPath) {
     
     // Return as JSON string for database storage
     const result = JSON.stringify(metadata);
-    console.log('Excel extraction completed successfully');
+    logger.info('Excel extraction completed successfully');
     return result;
     
   } catch (error) {
-    console.error('Error extracting text from Excel document:', error);
+    logger.error('Error extracting text from Excel document:', error);
     throw error;
   }
 }
@@ -2440,7 +2441,7 @@ exports.evaluateAllEvidences = async (req, res) => {
           });
         }
       } catch (parseError) {
-        console.error('Error parsing existing overall_execution_result:', parseError);
+        logger.error('Error parsing existing overall_execution_result:', parseError);
         // If parsing fails, continue with AI evaluation
       }
     }
@@ -2594,7 +2595,7 @@ exports.evaluateAllEvidences = async (req, res) => {
         try {
           parsedResult = JSON.parse(resultText);
         } catch (parseError) {
-          console.error('Invalid JSON from Gemini:', resultText);
+          logger.error('Invalid JSON from Gemini:', resultText);
           throw new Error('Invalid JSON response from AI');
         }
 
@@ -2656,7 +2657,7 @@ exports.evaluateAllEvidences = async (req, res) => {
           });
         }
       } catch (error) {
-        console.error(`Error processing evidence document ${doc.document_id}:`, error);
+        logger.error(`Error processing evidence document ${doc.document_id}:`, error);
         // Continue with next document even if one fails
         evidenceResults.push({
           document_id: doc.document_id,
@@ -2706,7 +2707,7 @@ exports.evaluateAllEvidences = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error evaluating all evidences:', error);
+    logger.error('Error evaluating all evidences:', error);
     res.status(500).json({ 
       message: 'Server error.',
       error: error.message 

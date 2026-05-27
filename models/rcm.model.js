@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const db = require('../config/db');
 
 const RCM = {
@@ -135,7 +136,7 @@ const RCM = {
         ];
 
         if (values.length !== columnsToInsert.length) {
-            console.error('Column/Value mismatch error for row:', row);
+            logger.error('Column/Value mismatch error for row:', row);
             throw new Error('Internal data structure error during bulk insert.');
         }
 

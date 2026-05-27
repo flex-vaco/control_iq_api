@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const Attributes = require('../models/attributes.model');
 const RCM = require('../models/rcm.model');
 const { isSuperAdmin } = require('../utils/auth.helper');
@@ -13,7 +14,7 @@ exports.getAllAttributes = async (req, res) => {
     const data = await Attributes.findAll(tenantId, clientId);
     res.json(data);
   } catch (error) {
-    console.error('Error fetching Attributes data:', error);
+    logger.error('Error fetching Attributes data:', error);
     res.status(500).json({ message: 'Server error.' });
   }
 };
@@ -45,7 +46,7 @@ exports.updateAttribute = async (req, res) => {
 
     res.json({ message: 'Attribute updated successfully.' });
   } catch (error) {
-    console.error('Error updating Attribute:', error);
+    logger.error('Error updating Attribute:', error);
     res.status(500).json({ message: 'Server error during attribute update.' });
   }
 };
@@ -69,7 +70,7 @@ exports.deleteAttribute = async (req, res) => {
 
     res.json({ message: 'Attribute deleted successfully.' });
   } catch (error) {
-    console.error('Error deleting Attribute:', error);
+    logger.error('Error deleting Attribute:', error);
     res.status(500).json({ message: 'Server error during attribute deletion.' });
   }
 };
@@ -150,7 +151,7 @@ exports.saveAttributes = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Attributes Save Error:', error);
+    logger.error('Attributes Save Error:', error);
     res.status(500).json({ message: 'Failed to save attributes.', error: error.message });
   }
 };

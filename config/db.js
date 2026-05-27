@@ -1,3 +1,4 @@
+const logger = require('../utils/logger');
 const mysql = require('mysql2/promise');
 const dotenv = require('dotenv');
 
@@ -18,11 +19,11 @@ const pool = mysql.createPool({
 // Test the connection
 pool.getConnection()
   .then(connection => {
-    console.log('Successfully connected to MySQL database.');
+    logger.info('Successfully connected to MySQL database.');
     connection.release();
   })
   .catch(err => {
-    console.error('Error connecting to MySQL:', err.message);
+    logger.error('Error connecting to MySQL:', err.message);
   });
 
 module.exports = pool;
